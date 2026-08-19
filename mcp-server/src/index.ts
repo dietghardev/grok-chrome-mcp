@@ -1,3 +1,7 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -7,6 +11,13 @@ import {
   writeBridgeFile,
 } from "./bridge-file.js";
 import { startBridge } from "./bridge-http.js";
+import {
+  EXTENSION_HOME,
+  helpText,
+  installExtension,
+  parseCli,
+  setupText,
+} from "./cli.js";
 import { screenshotContent } from "./content.js";
 import type { Bridge } from "./protocol.js";
 import { Session } from "./session.js";
@@ -42,7 +53,58 @@ function textResult(result: unknown) {
   };
 }
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function packageVersion(): string {
+  for (const candidate of [
+    path.join(HERE, "..", "package.json"),
+    path.join(HERE, "..", "..", "package.json"),
+  ]) {
+    try {
+      return String(JSON.parse(fs.readFileSync(candidate, "utf8")).version);
+    } catch {
+      // try the next location
+    }
+  }
+  return "0.0.0";
+}
+
+/** The extension ships inside the package; in a git clone it is a sibling. */
+function packagedExtensionDir(): string {
+  for (const candidate of [
+    path.join(HERE, "..", "extension"),
+    path.join(HERE, "..", "..", "extension"),
+  ]) {
+    if (fs.existsSync(path.join(candidate, "manifest.json"))) return candidate;
+  }
+  return path.join(HERE, "..", "extension");
+}
+
+async function runCli(): Promise<boolean> {
+  const cli = parseCli(process.argv.slice(2));
+  if (cli.command === "serve") return false;
+
+  if (cli.command === "version") {
+    console.log(packageVersion());
+    return true;
+  }
+  if (cli.command === "help") {
+    console.log(helpText(packageVersion()));
+    return true;
+  }
+  try {
+    const result = await installExtension(packagedExtensionDir(), EXTENSION_HOME);
+    console.log(setupText(result));
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+  }
+  return true;
+}
+
 async function main(): Promise<void> {
+  if (await runCli()) return;
+
   let bridge: Bridge;
   try {
     bridge = await startBridge();

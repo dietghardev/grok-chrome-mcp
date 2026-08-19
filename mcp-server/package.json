@@ -1,13 +1,56 @@
 {
   "name": "grok-chrome-mcp",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Drive your own Chrome from Grok Build: an MCP server plus an unpacked extension for clicking, typing, snapshots, console and network logs, and GIF recording.",
+  "license": "MIT",
+  "author": "dietghardev",
+  "homepage": "https://github.com/dietghardev/grok-chrome-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dietghardev/grok-chrome-mcp.git",
+    "directory": "mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/dietghardev/grok-chrome-mcp/issues"
+  },
+  "keywords": [
+    "grok",
+    "grok-build",
+    "mcp",
+    "model-context-protocol",
+    "chrome",
+    "chrome-extension",
+    "browser-automation",
+    "cdp",
+    "chrome-devtools-protocol",
+    "ai-agent",
+    "browser-mcp",
+    "xai"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "grok-chrome-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
+    "e2e": "tsx test/e2e.ts",
+    "postpack": "node scripts/prepack.mjs --clean",
+    "prepack": "node scripts/prepack.mjs",
+    "prepublishOnly": "npm run build && npm test",
     "smoke": "tsx test/smoke.ts",
-    "e2e": "tsx test/e2e.ts"
+    "test": "vitest run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",

@@ -1,14 +1,36 @@
-# Grok Chrome MCP
+<h1 align="center">grok-chrome-mcp</h1>
 
-A local Chrome bridge for Grok Build: an unpacked Manifest V3 extension plus an
-MCP server, so Grok can drive **your** Chrome — the one with your cookies and
-logins — from the terminal. The TUI is the interface; there is no side-panel
-chat.
+<p align="center">
+  <b>Give Grok Build hands in your own Chrome.</b><br>
+  An MCP server + unpacked extension that lets Grok open tabs, read pages, click,
+  type, run JavaScript, watch the console and network, and record what it did —
+  in the browser you already use, with the sessions you are already logged into.
+</p>
 
-Same shape as Claude's Chrome extension: open tabs, read the page, click, type,
-drag, run JavaScript, watch the console and network, and record what happened
-as a GIF. A visible cursor overlay (the *shadow mouse*) shows you where Grok is
-clicking as it works.
+<p align="center">
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="https://www.npmjs.com/package/grok-chrome-mcp"><img alt="npm" src="https://img.shields.io/npm/v/grok-chrome-mcp.svg"></a>
+  <img alt="node" src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg">
+  <img alt="tests" src="https://img.shields.io/badge/tests-117%20passing-brightgreen.svg">
+</p>
+
+---
+
+Claude has an official Chrome extension. Grok does not. This is that, for Grok
+Build — 35 tools over MCP, no forked client, no second browser profile, no
+`--remote-debugging-port`, no native messaging host.
+
+- **Your real browser.** Grok works in tabs it opens in your daily Chrome, so
+  your cookies and logins are just there. It never hijacks the tab you are
+  looking at.
+- **You can watch it work.** A *shadow mouse* — a cursor overlay drawn in the
+  page — moves to whatever Grok is about to click and ripples when it does.
+- **Permission per origin.** Reading is free; acting on a site needs your
+  consent for that origin, and a refused action never reaches Chrome at all.
+- **Debugging, not just clicking.** Console messages, network requests,
+  accessibility snapshots, page text, and animated-GIF recordings of a run.
+- **Chrome, Edge, Brave, Opera, Vivaldi** — connect several at once and pick
+  which one Grok drives.
 
 ```
 Grok Build TUI
@@ -20,28 +42,55 @@ mcp-server (Node)                 in-memory origin allowlist, serial queue
 MV3 extension  ──chrome.debugger (CDP)──▶  a tab Grok opened
 ```
 
-## Install
+## Quick start
 
 ```bash
-cd mcp-server && npm install && npm run build && npm test && npm run smoke
+npx -y grok-chrome-mcp setup
 ```
 
-1. Chrome → `chrome://extensions` → **Developer mode** → **Load unpacked** →
-   pick this repo's `extension/` directory.
-2. Add to `~/.grok/config.toml`, using the absolute path in your clone:
+That prints a folder to load and the config to paste. In full:
+
+1. **Install the extension** — run the command above, then open
+   `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
+   and choose the folder it printed (`~/.grok/grok-chrome-extension`).
+2. **Tell Grok about it** — add to `~/.grok/config.toml`:
+
+   ```toml
+   [mcp_servers.grok-chrome]
+   command = "npx"
+   args = ["-y", "grok-chrome-mcp"]
+   enabled = true
+   ```
+
+3. **Restart Grok** and pin the extension. Its popup goes from
+   `waiting for Grok` to `connected`.
+
+Then just ask, in the TUI:
+
+> open localhost:3000, sign in as test@example.com, and tell me what the
+> console says
+
+Grok will ask before it touches the site the first time.
+
+## From source
+
+
+```bash
+git clone https://github.com/dietghardev/grok-chrome-mcp.git
+cd grok-chrome-mcp/mcp-server && npm install && npm run build && npm test
+```
+
+Load `extension/` unpacked as above, and point Grok at the build:
 
 ```toml
 [mcp_servers.grok-chrome]
 command = "node"
-args = ["/path/to/grok-extension/mcp-server/dist/index.js"]
+args = ["/absolute/path/to/grok-chrome-mcp/mcp-server/dist/index.js"]
 ```
 
-3. Restart Grok, pin the extension. The popup goes from `waiting for Grok` to
-   `connected` and shows the bridge port and how many tabs are attached.
-
-Edge, Brave, Opera, and Vivaldi work too — load the same unpacked extension
-there. Every connected browser registers itself; `chrome_browsers` lists them
-and `chrome_select_browser` picks which one later tools drive.
+Edge, Brave, Opera, and Vivaldi work too — load the same folder there. Every
+connected browser registers itself; `chrome_browsers` lists them and
+`chrome_select_browser` picks which one later tools drive.
 
 ## Tools
 
