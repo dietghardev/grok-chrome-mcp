@@ -73,42 +73,65 @@ function snapshotRefs(
   return map;
 }
 
+function isAboutBlank(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "about:" && parsed.pathname === "blank";
+  } catch {
+    return false;
+  }
+}
+
+function blockedOrigin(url: string): ToolError {
+  const parsed = parseOrigin(url);
+  return fail(
+    "blocked_origin",
+    `Blocked origin: ${url}`,
+    parsed.ok ? { origin: parsed.origin } : undefined,
+  );
+}
+
 export function createTools(session: Session, bridge: Bridge) {
   const run = <T>(fn: () => Promise<T>): Promise<T> => session.enqueue(fn);
 
   function checkDestination(url: string): ToolResult<{ origin: string }> {
+    if (isAboutBlank(url)) return { ok: true, origin: "about:blank" };
     const parsed = parseOrigin(url);
     if (!parsed.ok) return parsed;
-    if (isBlockedUrl(url)) {
-      return fail("blocked_origin", `Blocked origin: ${parsed.origin}`, {
-        origin: parsed.origin,
-      });
-    }
+    if (isBlockedUrl(url)) return blockedOrigin(url);
     const grant = session.requireGrant(parsed.origin);
     if (!grant.ok) return grant;
     return parsed;
   }
 
-  async function requirePageGrant(
-    tabId: number,
-  ): Promise<ToolResult<{ url: string; title: string }>> {
+  async function loadPage(tabId: number): Promise<ToolResult<TabInfo>> {
     const resp = await bridge.send("page", { tabId });
     if (!resp.ok) return mapWsError(resp);
-    const url = asString(resp.result.url);
-    const title = asString(resp.result.title);
-    if (isBlockedUrl(url)) {
-      const parsed = parseOrigin(url);
-      return fail(
-        "blocked_origin",
-        `Blocked origin: ${url}`,
-        parsed.ok ? { origin: parsed.origin } : undefined,
-      );
-    }
-    const parsed = parseOrigin(url);
+    const info = tabPayload(resp.result, { tabId });
+    if (isBlockedUrl(info.url)) return blockedOrigin(info.url);
+    return { ok: true, ...info };
+  }
+
+  async function requirePageGrant(tabId: number): Promise<ToolResult<TabInfo>> {
+    const info = await loadPage(tabId);
+    if (!info.ok) return info;
+    if (isAboutBlank(info.url)) return info;
+    const parsed = parseOrigin(info.url);
     if (!parsed.ok) return parsed;
     const grant = session.requireGrant(parsed.origin);
     if (!grant.ok) return grant;
-    return { ok: true, url, title };
+    return info;
+  }
+
+  async function sendNewTab(url?: string): Promise<ToolResult<TabInfo>> {
+    const params: Record<string, unknown> = url !== undefined ? { url } : {};
+    const resp = await bridge.send("newTab", params);
+    if (!resp.ok) return mapWsError(resp);
+    adoptGrokTab(resp.result);
+    return {
+      ok: true,
+      ...tabPayload(resp.result, { url: url ?? "about:blank" }),
+    };
   }
 
   function adoptGrokTab(result: Record<string, unknown>): void {
@@ -147,13 +170,7 @@ export function createTools(session: Session, bridge: Bridge) {
       const dest = checkDestination(url);
       if (!dest.ok) return dest;
     }
-    return run(async () => {
-      const params: Record<string, unknown> = url !== undefined ? { url } : {};
-      const resp = await bridge.send("newTab", params);
-      if (!resp.ok) return mapWsError(resp);
-      adoptGrokTab(resp.result);
-      return { ok: true as const, ...tabPayload(resp.result, { url: url ?? "about:blank" }) };
-    });
+    return run(async () => sendNewTab(url));
   }
 
   async function useTab(tabId: number) {
@@ -168,21 +185,10 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function page() {
-    const tabId = session.targetTabId;
-    if (tabId == null) return noTab();
     return run(async () => {
-      const resp = await bridge.send("page", { tabId });
-      if (!resp.ok) return mapWsError(resp);
-      const info = tabPayload(resp.result, { tabId });
-      if (isBlockedUrl(info.url)) {
-        const parsed = parseOrigin(info.url);
-        return fail(
-          "blocked_origin",
-          `Blocked origin: ${info.url}`,
-          parsed.ok ? { origin: parsed.origin } : undefined,
-        );
-      }
-      return { ok: true as const, ...info };
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      return loadPage(tabId);
     });
   }
 
@@ -190,20 +196,25 @@ export function createTools(session: Session, bridge: Bridge) {
     const dest = checkDestination(url);
     if (!dest.ok) return dest;
     return run(async () => {
-      const resp = await bridge.send("navigate", {
-        tabId: session.targetTabId,
-        url,
-      });
+      let tabId = session.targetTabId;
+      if (tabId == null) {
+        const opened = await sendNewTab();
+        if (!opened.ok) return opened;
+        tabId = opened.tabId;
+      }
+      const resp = await bridge.send("navigate", { tabId, url });
       if (!resp.ok) return mapWsError(resp);
       adoptGrokTab(resp.result);
-      return { ok: true as const, ...tabPayload(resp.result, { tabId: session.targetTabId, url }) };
+      return { ok: true as const, ...tabPayload(resp.result, { tabId, url }) };
     });
   }
 
   async function screenshot() {
-    const tabId = session.targetTabId;
-    if (tabId == null) return noTab();
     return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const readable = await loadPage(tabId);
+      if (!readable.ok) return readable;
       const resp = await bridge.send("screenshot", { tabId });
       if (!resp.ok) return mapWsError(resp);
       return {
@@ -216,9 +227,11 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function snapshot() {
-    const tabId = session.targetTabId;
-    if (tabId == null) return noTab();
     return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const readable = await loadPage(tabId);
+      if (!readable.ok) return readable;
       const resp = await bridge.send("snapshot", { tabId });
       if (!resp.ok) return mapWsError(resp);
       session.rememberSnapshot(tabId, snapshotRefs(resp.result.refs));
@@ -314,9 +327,11 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function consoleMessages(level?: string, limit?: number) {
-    const tabId = session.targetTabId;
-    if (tabId == null) return noTab();
     return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const readable = await loadPage(tabId);
+      if (!readable.ok) return readable;
       const params: Record<string, unknown> = { tabId };
       if (level !== undefined) params.level = level;
       if (limit !== undefined) params.limit = limit;
@@ -328,9 +343,11 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function network(urlContains?: string, status?: number, limit?: number) {
-    const tabId = session.targetTabId;
-    if (tabId == null) return noTab();
     return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const readable = await loadPage(tabId);
+      if (!readable.ok) return readable;
       const params: Record<string, unknown> = { tabId };
       if (urlContains !== undefined) params.urlContains = urlContains;
       if (status !== undefined) params.status = status;

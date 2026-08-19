@@ -3,7 +3,10 @@ import { Session } from "../src/session.js";
 import { createTools } from "../src/tools.js";
 import type { Bridge, WsResponse } from "../src/protocol.js";
 
-function fakeBridge(record: string[]): Bridge {
+function fakeBridge(
+  record: string[],
+  pageUrl = "http://localhost:3000/login",
+): Bridge {
   return {
     port: 17352,
     isConnected: () => true,
@@ -15,7 +18,7 @@ function fakeBridge(record: string[]): Bridge {
         return {
           id: "x",
           ok: true,
-          result: { tabId: 7, url: "http://localhost:3000/login", title: "Login" },
+          result: { tabId: 7, url: pageUrl, title: "Login" },
         } satisfies WsResponse;
       }
       if (method === "newTab") {
@@ -50,6 +53,17 @@ describe("mutating tools require a grant before send", () => {
     const tools = createTools(session, fakeBridge(calls));
     const r = await tools.navigate("http://localhost:3000/");
     expect(r.ok).toBe(true);
+    expect(calls).toEqual(["newTab", "navigate"]);
+  });
+
+  it("chrome_navigate uses the existing target tab", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.grant("http://localhost:3000");
+    session.targetTabId = 7;
+    const tools = createTools(session, fakeBridge(calls));
+    const r = await tools.navigate("http://localhost:3000/");
+    expect(r.ok).toBe(true);
     expect(calls).toEqual(["navigate"]);
   });
 
@@ -71,5 +85,45 @@ describe("mutating tools require a grant before send", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("needs_permission");
     expect(calls).toEqual(["page"]);
+  });
+});
+
+describe("blocked origins and about:blank", () => {
+  it("screenshot does not send when the page origin is blocked", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.targetTabId = 7;
+    const tools = createTools(session, fakeBridge(calls, "chrome://extensions"));
+    const r = await tools.screenshot();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("blocked_origin");
+    expect(calls).toEqual(["page"]);
+  });
+
+  it("navigate to about:blank does not need a grant", async () => {
+    const calls: string[] = [];
+    const tools = createTools(new Session(), fakeBridge(calls));
+    const r = await tools.navigate("about:blank");
+    expect(r.ok).toBe(true);
+    expect(calls).toEqual(["newTab", "navigate"]);
+  });
+
+  it("new tab at about:blank does not need a grant", async () => {
+    const calls: string[] = [];
+    const tools = createTools(new Session(), fakeBridge(calls));
+    const r = await tools.newTab("about:blank");
+    expect(r.ok).toBe(true);
+    expect(calls).toEqual(["newTab"]);
+  });
+
+  it("click on about:blank does not need a grant", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.targetTabId = 7;
+    session.rememberSnapshot(7, new Map([["e1", { backendNodeId: 99 }]]));
+    const tools = createTools(session, fakeBridge(calls, "about:blank"));
+    const r = await tools.click("e1");
+    expect(r.ok).toBe(true);
+    expect(calls).toEqual(["page", "click"]);
   });
 });

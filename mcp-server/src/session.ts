@@ -1,4 +1,4 @@
-import { fail, type ToolResult } from "./errors.js";
+import { fail, type ToolError, type ToolResult } from "./errors.js";
 import { parseOrigin } from "./origins.js";
 
 export type SnapshotRef = { backendNodeId: number };
@@ -25,7 +25,7 @@ export class Session {
     return this.allow.has(origin);
   }
 
-  requireGrant(origin: string): ToolResult<Record<string, never>> {
+  requireGrant(origin: string): { ok: true } | ToolError {
     if (this.allow.has(origin)) return { ok: true };
     return fail(
       "needs_permission",
