@@ -2,18 +2,105 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Login</title>
+  <title>Grok Chrome fixture</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; max-width: 760px; }
+    section { border-top: 1px solid #8883; padding: 18px 0; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin: 0 0 12px; }
+    label { display: block; margin-bottom: 10px; }
+    input, select, button { font: inherit; padding: 6px 8px; }
+    #hoverbox { padding: 14px; border: 1px dashed #8886; border-radius: 8px; width: 200px; }
+    #hoverbox:hover { background: #7C5CFF22; border-color: #7C5CFF; }
+    #dropzone { min-height: 64px; border: 2px dashed #8886; border-radius: 8px; padding: 12px; }
+    #chip { display: inline-block; padding: 6px 12px; background: #7C5CFF; color: #fff; border-radius: 999px; cursor: grab; }
+    .tall { height: 900px; background: linear-gradient(#7C5CFF22, transparent); border-radius: 8px; }
+    #error { color: #c0392b; font-weight: 600; }
+  </style>
 </head>
 <body>
-  <h1>Login</h1>
-  <label>Email <input id="email" name="email" /></label>
-  <label>Password <input id="password" name="password" type="password" /></label>
-  <button id="submit" type="button">Sign in</button>
-  <div id="error" hidden>Invalid credentials</div>
+  <h1>Grok Chrome fixture</h1>
+
+  <section>
+    <h2>Login — console.error, wait_for, press</h2>
+    <label>Email <input id="email" name="email" /></label>
+    <label>Password <input id="password" name="password" type="password" /></label>
+    <button id="submit" type="button">Sign in</button>
+    <div id="error" hidden>Invalid credentials</div>
+    <div id="late" hidden>Welcome back</div>
+  </section>
+
+  <section>
+    <h2>Select — select_option</h2>
+    <label>Colour
+      <select id="colour">
+        <option value="">Choose…</option>
+        <option value="red">Red</option>
+        <option value="blue">Blue</option>
+        <option value="green">Green</option>
+      </select>
+    </label>
+    <div id="chosen">nothing chosen</div>
+  </section>
+
+  <section>
+    <h2>File — upload_file</h2>
+    <label>Attachment <input id="file" type="file" /></label>
+    <div id="filename">no file</div>
+  </section>
+
+  <section>
+    <h2>Hover and drag — hover, drag</h2>
+    <div id="hoverbox">hover me</div>
+    <div id="hoverstate">not hovered</div>
+    <p><span id="chip" draggable="false">drag me</span></p>
+    <div id="dropzone">drop here</div>
+  </section>
+
+  <section>
+    <h2>Scroll — scroll, screenshot</h2>
+    <div class="tall"></div>
+    <div id="bottom">you reached the bottom</div>
+  </section>
+
   <script>
-    document.getElementById("submit").addEventListener("click", () => {
+    const $ = (id) => document.getElementById(id);
+
+    $("submit").addEventListener("click", () => {
       console.error("login failed");
-      document.getElementById("error").hidden = false;
+      $("error").hidden = false;
+      // Appears late so chrome_wait_for has something to wait on.
+      setTimeout(() => { $("late").hidden = false; }, 1200);
+      fetch("/missing-endpoint.json").catch(() => {});
+    });
+
+    $("colour").addEventListener("change", (e) => {
+      $("chosen").textContent = "chose " + (e.target.value || "nothing");
+    });
+
+    $("file").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      $("filename").textContent = f ? f.name + " (" + f.size + " bytes)" : "no file";
+    });
+
+    $("hoverbox").addEventListener("mouseenter", () => {
+      $("hoverstate").textContent = "hovered";
+    });
+    $("hoverbox").addEventListener("mouseleave", () => {
+      $("hoverstate").textContent = "not hovered";
+    });
+
+    // Pointer-based drag, the kind mouse events can actually drive.
+    let dragging = false;
+    $("chip").addEventListener("mousedown", () => { dragging = true; });
+    document.addEventListener("mouseup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const zone = $("dropzone").getBoundingClientRect();
+      const inside =
+        e.clientX >= zone.left && e.clientX <= zone.right &&
+        e.clientY >= zone.top && e.clientY <= zone.bottom;
+      if (inside) $("dropzone").textContent = "dropped!";
     });
   </script>
 </body>

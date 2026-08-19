@@ -2,10 +2,10 @@ const PORTS = [];
 for (let p = 17352; p <= 17361; p++) PORTS.push(p);
 
 import { findMatches, renderSnapshot } from "./lib/ax.js";
+import { detectBrowserName, stableBrowserId } from "./lib/identity.js";
 import { parseKey } from "./lib/keys.js";
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
-const BROWSER_ID_KEY = "grokBrowserId";
 const RECONNECT_START_MS = 300;
 const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
@@ -32,48 +32,24 @@ let connecting = false;
 let reconnectDelay = RECONNECT_START_MS;
 let reconnectTimer = null;
 
-/** Brave and Edge masquerade as Chrome in the UA string; ask properly. */
-async function detectBrowserName() {
-  try {
-    if (navigator.brave && (await navigator.brave.isBrave())) return "Brave";
-  } catch {
-    // not Brave
-  }
-  const brands =
-    (navigator.userAgentData && navigator.userAgentData.brands) || [];
-  const names = brands.map((b) => String(b.brand));
-  const match = (re) => names.some((n) => re.test(n));
-  if (match(/Edge/i)) return "Edge";
-  if (match(/Opera|OPR/i)) return "Opera";
-  if (match(/Vivaldi/i)) return "Vivaldi";
-  if (match(/Google Chrome/i)) return "Chrome";
-  if (match(/Chromium/i)) return "Chromium";
-  return "Chrome";
-}
-
-/**
- * A stable id per browser install so the MCP server keeps this browser's
- * target tab across service-worker restarts and extension reloads.
- */
-async function browserId() {
-  try {
-    const stored = await chrome.storage.local.get(BROWSER_ID_KEY);
-    const existing = stored && stored[BROWSER_ID_KEY];
-    if (typeof existing === "string" && existing) return existing;
-    const fresh = crypto.randomUUID();
-    await chrome.storage.local.set({ [BROWSER_ID_KEY]: fresh });
-    return fresh;
-  } catch {
-    return "local-" + EXTENSION_VERSION;
-  }
-}
-
 async function buildHello() {
-  browserName = await detectBrowserName();
+  // Identity must never block the handshake: if detection fails we still say
+  // hello, just with defaults.
+  try {
+    browserName = await detectBrowserName(navigator);
+  } catch {
+    browserName = "Chrome";
+  }
+  let id;
+  try {
+    id = await stableBrowserId(chrome.storage.local);
+  } catch {
+    id = "ephemeral-" + Math.floor(Math.random() * 1e9);
+  }
   return {
     type: "hello",
     extensionVersion: EXTENSION_VERSION,
-    browserId: await browserId(),
+    browserId: id,
     browserName,
   };
 }
@@ -207,7 +183,22 @@ async function newTab(url) {
   }
   const tab = await chrome.tabs.create({ url: target });
   await groupGrokTab(tab.id);
-  return tabResult(tab);
+  if (target === "about:blank") return tabResult(tab);
+
+  // Wait for the load, so the first snapshot after opening a tab describes the
+  // page rather than the blank document it started as.
+  const pending = waitComplete(tab.id, NAVIGATE_TIMEOUT_MS);
+  const settled = await getTab(tab.id);
+  if (settled && settled.status === "complete" && settled.url === target) {
+    pending.cancel();
+    return tabResult(settled);
+  }
+  try {
+    return tabResult(await pending);
+  } catch (e) {
+    if (e && e.code === "timeout") return fail("timeout", e.message);
+    return tabResult(settled || tab);
+  }
 }
 
 async function page(tabId) {
@@ -246,6 +237,10 @@ async function navigate(tabId, url) {
 }
 
 async function attach(tabId) {
+  // Already set up: the domains stay enabled across navigations, so redoing
+  // six CDP round-trips before every click is pure latency.
+  if (attached.has(tabId)) return;
+
   const target = { tabId };
   try {
     await chrome.debugger.attach(target, "1.3");
@@ -254,19 +249,24 @@ async function attach(tabId) {
       throw Object.assign(new Error(String(e)), { code: "debugger_failed" });
     }
   }
-  if (!attached.has(tabId)) {
-    attached.set(tabId, {
-      consoleBuf: [],
-      networkBuf: [],
-      requests: new Map(),
-    });
+  attached.set(tabId, {
+    consoleBuf: [],
+    networkBuf: [],
+    requests: new Map(),
+  });
+  try {
+    await chrome.debugger.sendCommand(target, "Page.enable", {});
+    await chrome.debugger.sendCommand(target, "DOM.enable", {});
+    await chrome.debugger.sendCommand(target, "Runtime.enable", {});
+    await chrome.debugger.sendCommand(target, "Console.enable", {});
+    await chrome.debugger.sendCommand(target, "Network.enable", {});
+    await chrome.debugger.sendCommand(target, "Accessibility.enable", {});
+  } catch (e) {
+    // Half-enabled is worse than not attached: forget it so the next command
+    // starts clean instead of sending into a dead session.
+    attached.delete(tabId);
+    throw Object.assign(new Error(String(e)), { code: "debugger_failed" });
   }
-  await chrome.debugger.sendCommand(target, "Page.enable", {});
-  await chrome.debugger.sendCommand(target, "DOM.enable", {});
-  await chrome.debugger.sendCommand(target, "Runtime.enable", {});
-  await chrome.debugger.sendCommand(target, "Console.enable", {});
-  await chrome.debugger.sendCommand(target, "Network.enable", {});
-  await chrome.debugger.sendCommand(target, "Accessibility.enable", {});
 }
 
 async function ensureAttached(tabId) {
@@ -1281,10 +1281,16 @@ function openSocket(port) {
     connected = true;
     bridgePort = port;
     reconnectDelay = RECONNECT_START_MS;
-    buildHello().then((hello) => {
-      if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(hello));
-    });
+    buildHello()
+      .catch(() => ({
+        type: "hello",
+        extensionVersion: EXTENSION_VERSION,
+        browserName: "Chrome",
+      }))
+      .then((hello) => {
+        if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify(hello));
+      });
   });
 
   socket.addEventListener("message", (event) => {
@@ -1341,6 +1347,12 @@ async function connect() {
 }
 
 chrome.debugger.onEvent.addListener(onDebuggerEvent);
+
+// The user can end a debugging session from Chrome's banner. Forget the tab so
+// the next command re-attaches instead of talking to a session that is gone.
+chrome.debugger.onDetach.addListener((source) => {
+  if (source && source.tabId != null) attached.delete(source.tabId);
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (!attached.has(tabId)) return;
