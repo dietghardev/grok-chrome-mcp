@@ -5,6 +5,12 @@ const HELLO = { type: "hello", extensionVersion: "0.1.0" };
 const RECONNECT_START_MS = 300;
 const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
+const NAVIGATE_TIMEOUT_MS = 30000;
+const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
+const WEBSTORE_HOSTS = new Set([
+  "chrome.google.com",
+  "chromewebstore.google.com",
+]);
 
 let connected = false;
 let ws = null;
@@ -32,9 +38,159 @@ async function findBridge() {
   return null;
 }
 
+function isBlockedUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "about:") return u.pathname !== "blank";
+    if (BLOCKED_SCHEMES.has(u.protocol)) return true;
+    if (WEBSTORE_HOSTS.has(u.hostname)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function fail(code, message) {
+  return { code, message };
+}
+
+function tabResult(tab) {
+  return {
+    tabId: tab.id,
+    url: tab.url || "",
+    title: tab.title || "",
+  };
+}
+
+async function getTab(tabId) {
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch {
+    return null;
+  }
+}
+
+function waitComplete(tabId, timeoutMs) {
+  let cancel = () => {};
+  const promise = new Promise((resolve, reject) => {
+    let settled = false;
+
+    function finish(tab, error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      if (error) reject(error);
+      else resolve(tab);
+    }
+
+    cancel = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
+
+    const timer = setTimeout(() => {
+      finish(
+        null,
+        Object.assign(new Error("Navigation timed out"), { code: "timeout" }),
+      );
+    }, timeoutMs);
+
+    function onUpdated(id, info, tab) {
+      if (id === tabId && info.status === "complete") finish(tab);
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+  promise.cancel = cancel;
+  return promise;
+}
+
+async function listTabs() {
+  const list = await chrome.tabs.query({});
+  return {
+    tabs: list.map((tab) => ({
+      id: tab.id,
+      title: tab.title || "",
+      url: tab.url || "",
+      active: Boolean(tab.active),
+    })),
+  };
+}
+
+async function groupGrokTab(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const groups = await chrome.tabGroups.query({
+      title: "Grok",
+      windowId: tab.windowId,
+    });
+    const options = { tabIds: [tabId] };
+    if (groups.length) options.groupId = groups[0].id;
+    const groupId = await chrome.tabs.group(options);
+    await chrome.tabGroups.update(groupId, { title: "Grok", color: "blue" });
+  } catch {
+    // grouping is best-effort
+  }
+}
+
+async function newTab(url) {
+  const target = url || "about:blank";
+  if (isBlockedUrl(target)) {
+    return fail("blocked_origin", `Blocked origin: ${target}`);
+  }
+  const tab = await chrome.tabs.create({ url: target });
+  await groupGrokTab(tab.id);
+  return tabResult(tab);
+}
+
+async function page(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  return tabResult(tab);
+}
+
+async function navigate(tabId, url) {
+  if (typeof url !== "string" || isBlockedUrl(url)) {
+    return fail("blocked_origin", `Blocked origin: ${url}`);
+  }
+  const existing = await getTab(tabId);
+  if (!existing) return fail("no_tab", `Tab ${tabId} not found`);
+  const pending = waitComplete(tabId, NAVIGATE_TIMEOUT_MS);
+  try {
+    await chrome.tabs.update(tabId, { url });
+  } catch (e) {
+    pending.cancel();
+    return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+  try {
+    const loaded = await pending;
+    return tabResult(loaded);
+  } catch (e) {
+    if (e && e.code === "timeout") {
+      return fail("timeout", e.message || "Navigation timed out");
+    }
+    return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+}
+
 async function handle(msg) {
   const method = msg.method;
-  return { code: "debugger_failed", message: "unknown method " + method };
+  const params = msg.params && typeof msg.params === "object" ? msg.params : {};
+  switch (method) {
+    case "tabs":
+      return listTabs();
+    case "newTab":
+      return newTab(params.url);
+    case "page":
+      return page(params.tabId);
+    case "navigate":
+      return navigate(params.tabId, params.url);
+    default:
+      return fail("debugger_failed", "unknown method " + method);
+  }
 }
 
 function isHandleError(value) {
