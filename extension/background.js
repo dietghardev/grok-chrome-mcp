@@ -272,6 +272,10 @@ function firstFrameUrl(stackTrace) {
   return url || undefined;
 }
 
+function consoleLevel(level) {
+  return level === "warning" ? "warn" : level;
+}
+
 function bufferLimit(limit) {
   if (typeof limit === "number" && Number.isFinite(limit) && limit >= 0) {
     return limit;
@@ -295,7 +299,7 @@ function onDebuggerEvent(source, method, params) {
   if (method === "Runtime.consoleAPICalled") {
     const url = firstFrameUrl(p.stackTrace);
     const entry = {
-      level: p.type,
+      level: consoleLevel(p.type),
       text: consoleArgsText(p.args),
       timestamp: p.timestamp,
     };
@@ -652,7 +656,8 @@ async function readConsole(tabId, level, limit) {
   const state = attached.get(tabId);
   let messages = state ? state.consoleBuf.slice() : [];
   if (level != null && level !== "") {
-    messages = messages.filter((m) => m.level === level);
+    const want = consoleLevel(level);
+    messages = messages.filter((m) => m.level === want);
   }
   return { messages: tail(messages, limit) };
 }
