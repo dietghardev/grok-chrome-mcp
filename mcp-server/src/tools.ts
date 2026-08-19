@@ -10,6 +10,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   "blocked_origin",
   "needs_permission",
   "invalid_origin",
+  "invalid_input",
   "stale_ref",
   "timeout",
   "debugger_failed",
@@ -411,6 +412,245 @@ export function createTools(session: Session, bridge: Bridge) {
     });
   }
 
+
+  /** Resolves a snapshot ref on the target tab, gated on the page's origin. */
+  async function actOnRef(
+    ref: string | undefined,
+    method: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<ToolResult<Record<string, unknown>>> {
+    const tabId = session.targetTabId;
+    if (tabId == null) return noTab();
+    const params: Record<string, unknown> = { tabId, ...extra };
+    if (ref !== undefined) {
+      const node = session.lookupRef(tabId, ref);
+      if (!node.ok) return node;
+      params.backendNodeId = node.backendNodeId;
+    }
+    const granted = await requirePageGrant(tabId);
+    if (!granted.ok) return granted;
+    const resp = await bridge.send(method, params);
+    if (!resp.ok) return mapWsError(resp);
+    return { ok: true, ...resp.result };
+  }
+
+  /** Sends a read-only command that only needs the tab to be readable. */
+  async function readOnly(
+    method: string,
+    extra: Record<string, unknown> = {},
+    timeoutMs?: number,
+  ): Promise<ToolResult<Record<string, unknown>>> {
+    const tabId = session.targetTabId;
+    if (tabId == null) return noTab();
+    const readable = await loadPage(tabId);
+    if (!readable.ok) return readable;
+    const resp = await bridge.send(method, { tabId, ...extra }, timeoutMs);
+    if (!resp.ok) return mapWsError(resp);
+    return { ok: true, ...resp.result };
+  }
+
+  async function hover(ref: string) {
+    return run(async () => actOnRef(ref, "hover"));
+  }
+
+  async function drag(fromRef: string, toRef: string) {
+    return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const to = session.lookupRef(tabId, toRef);
+      if (!to.ok) return to;
+      return actOnRef(fromRef, "drag", { toBackendNodeId: to.backendNodeId });
+    });
+  }
+
+  async function press(key: string, ref?: string) {
+    return run(async () => actOnRef(ref, "press", { key }));
+  }
+
+  async function selectOption(ref: string, values: string[]) {
+    return run(async () => actOnRef(ref, "selectOption", { values }));
+  }
+
+  async function uploadFile(ref: string, paths: string[]) {
+    return run(async () => actOnRef(ref, "uploadFile", { paths }));
+  }
+
+  async function back() {
+    return run(async () => actOnRef(undefined, "back"));
+  }
+
+  async function forward() {
+    return run(async () => actOnRef(undefined, "forward"));
+  }
+
+  async function reload() {
+    return run(async () => actOnRef(undefined, "reload"));
+  }
+
+  async function evaluate(expression: string) {
+    return run(async () => actOnRef(undefined, "evaluate", { expression }));
+  }
+
+  async function resize(width: number, height: number) {
+    return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const resp = await bridge.send("resize", { tabId, width, height });
+      if (!resp.ok) return mapWsError(resp);
+      return { ok: true as const, ...resp.result };
+    });
+  }
+
+  async function closeTab(tabId?: number) {
+    return run(async () => {
+      const target = tabId ?? session.targetTabId;
+      if (target == null) return noTab();
+      // Closing a tab Grok opened is its own business; closing one of the
+      // user's tabs destroys their state, so that needs the origin grant.
+      if (!session.isGrokTab(target)) {
+        const granted = await requirePageGrant(target);
+        if (!granted.ok) return granted;
+      }
+      const resp = await bridge.send("closeTab", { tabId: target });
+      if (!resp.ok) return mapWsError(resp);
+      session.unmarkGrokTab(target);
+      return { ok: true as const, closedTabId: target };
+    });
+  }
+
+  /** The overlay is aria-hidden and pointer-events:none, so it is not an
+   * interaction with the page and needs no origin grant. */
+  async function cursor(show: boolean) {
+    return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const resp = await bridge.send("cursor", { tabId, show });
+      if (!resp.ok) return mapWsError(resp);
+      return { ok: true as const, ...resp.result };
+    });
+  }
+
+  async function pageText(maxChars?: number) {
+    return run(async () => {
+      const extra: Record<string, unknown> = {};
+      if (maxChars !== undefined) extra.maxChars = maxChars;
+      const r = await readOnly("text", extra);
+      if (!r.ok) return r;
+      return {
+        ok: true as const,
+        text: asString(r.text),
+        truncated: r.truncated === true,
+      };
+    });
+  }
+
+  async function find(text?: string, role?: string) {
+    return run(async () => {
+      const tabId = session.targetTabId;
+      if (tabId == null) return noTab();
+      const extra: Record<string, unknown> = {};
+      if (text !== undefined) extra.text = text;
+      if (role !== undefined) extra.role = role;
+      const r = await readOnly("find", extra);
+      if (!r.ok) return r;
+      // find shares chrome_snapshot's numbering, so its refs stay clickable.
+      session.rememberSnapshot(tabId, snapshotRefs(r.refs));
+      return {
+        ok: true as const,
+        text: asString(r.text),
+        matches: asNumber(r.matches) ?? 0,
+      };
+    });
+  }
+
+  async function waitFor(opts: {
+    text?: string;
+    textGone?: string;
+    timeoutMs?: number;
+  }) {
+    return run(async () => {
+      const extra: Record<string, unknown> = {};
+      if (opts.text !== undefined) extra.text = opts.text;
+      if (opts.textGone !== undefined) extra.textGone = opts.textGone;
+      const timeoutMs = opts.timeoutMs ?? 10_000;
+      extra.timeoutMs = timeoutMs;
+      return readOnly("waitFor", extra, timeoutMs + 5_000);
+    });
+  }
+
+  type BatchAction = Record<string, unknown> & { tool?: unknown };
+
+  /** One round-trip for a short fixed sequence, stopping at the first error. */
+  async function batch(actions: BatchAction[]) {
+    const results: unknown[] = [];
+    for (const action of actions) {
+      const name = typeof action.tool === "string" ? action.tool : "";
+      const str = (key: string): string =>
+        typeof action[key] === "string" ? (action[key] as string) : "";
+      const optStr = (key: string): string | undefined =>
+        typeof action[key] === "string" ? (action[key] as string) : undefined;
+      const optNum = (key: string): number | undefined =>
+        typeof action[key] === "number" ? (action[key] as number) : undefined;
+
+      let result: unknown;
+      switch (name) {
+        case "click":
+          result = await click(str("ref"));
+          break;
+        case "type":
+          result = await type(str("text"), optStr("ref"), action.submit === true);
+          break;
+        case "fill":
+          result = await fill(str("ref"), str("value"));
+          break;
+        case "press":
+          result = await press(str("key"), optStr("ref"));
+          break;
+        case "hover":
+          result = await hover(str("ref"));
+          break;
+        case "drag":
+          result = await drag(str("ref"), str("toRef"));
+          break;
+        case "selectOption":
+          result = await selectOption(
+            str("ref"),
+            Array.isArray(action.values) ? (action.values as string[]) : [],
+          );
+          break;
+        case "scroll":
+          result = await scroll(
+            (optStr("direction") ?? "down") as ScrollDirection,
+            optStr("ref"),
+            optNum("amount"),
+          );
+          break;
+        case "navigate":
+          result = await navigate(str("url"));
+          break;
+        case "waitFor":
+          result = await waitFor({
+            text: optStr("text"),
+            textGone: optStr("textGone"),
+            timeoutMs: optNum("timeoutMs"),
+          });
+          break;
+        case "snapshot":
+          result = await snapshot();
+          break;
+        default:
+          return fail(
+            "invalid_input",
+            `Unknown batch action "${name}". Use click, type, fill, press, hover, drag, selectOption, scroll, navigate, waitFor, or snapshot.`,
+          );
+      }
+      const step = result as { ok?: boolean };
+      if (!step?.ok) return result as ToolError;
+      results.push(result);
+    }
+    return { ok: true as const, results };
+  }
+
   return {
     grantSite,
     revokeSite,
@@ -418,6 +658,22 @@ export function createTools(session: Session, bridge: Bridge) {
     selectBrowser,
     tabs,
     newTab,
+    closeTab,
+    hover,
+    drag,
+    press,
+    selectOption,
+    uploadFile,
+    back,
+    forward,
+    reload,
+    evaluate,
+    resize,
+    pageText,
+    find,
+    waitFor,
+    cursor,
+    batch,
     useTab,
     page,
     navigate,

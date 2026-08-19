@@ -1,6 +1,9 @@
 const PORTS = [];
 for (let p = 17352; p <= 17361; p++) PORTS.push(p);
 
+import { findMatches, renderSnapshot } from "./lib/ax.js";
+import { parseKey } from "./lib/keys.js";
+
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const BROWSER_ID_KEY = "grokBrowserId";
 const RECONNECT_START_MS = 300;
@@ -11,22 +14,13 @@ const SCROLL_TICK_PX = 360;
 const CONSOLE_MAX = 500;
 const NETWORK_MAX = 200;
 const BUFFER_LIMIT_DEFAULT = 100;
+const TEXT_DEFAULT_CAP = 20000;
+const TEXT_HARD_CAP = 200000;
+const WAIT_POLL_MS = 250;
 const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
 const WEBSTORE_HOSTS = new Set([
   "chrome.google.com",
   "chromewebstore.google.com",
-]);
-const INTERACTIVE_ROLES = new Set([
-  "button",
-  "link",
-  "textbox",
-  "checkbox",
-  "radio",
-  "combobox",
-  "menuitem",
-  "tab",
-  "heading",
-  "searchbox",
 ]);
 const attached = new Map();
 
@@ -404,52 +398,6 @@ function onDebuggerEvent(source, method, params) {
   }
 }
 
-function axString(ax) {
-  if (!ax || ax.value == null) return "";
-  return String(ax.value);
-}
-
-function flattenAx(nodes) {
-  const list = Array.isArray(nodes) ? nodes : [];
-  const byId = new Map();
-  for (const node of list) {
-    if (node && node.nodeId != null) byId.set(node.nodeId, node);
-  }
-  const out = [];
-  const seen = new Set();
-
-  function consider(node) {
-    if (!node || node.ignored) return;
-    if (node.backendDOMNodeId == null) return;
-    const roleRaw = axString(node.role);
-    const role = roleRaw.toLowerCase();
-    const name = axString(node.name).trim();
-    if (!name && !INTERACTIVE_ROLES.has(role)) return;
-    if (!name && role === "generic") return;
-    out.push({
-      role: roleRaw || "generic",
-      name,
-      backendNodeId: node.backendDOMNodeId,
-    });
-  }
-
-  function walk(node) {
-    if (!node || seen.has(node.nodeId)) return;
-    seen.add(node.nodeId);
-    consider(node);
-    for (const childId of node.childIds || []) {
-      walk(byId.get(childId));
-    }
-  }
-
-  const roots = list.filter((n) => n && (n.parentId == null || !byId.has(n.parentId)));
-  for (const root of roots.length ? roots : list) walk(root);
-  for (const node of list) {
-    if (node && !seen.has(node.nodeId)) walk(node);
-  }
-  return out;
-}
-
 function quadCenter(points) {
   if (!points || points.length < 8) return null;
   return {
@@ -527,6 +475,7 @@ async function clickAt(target, x, y) {
 
 async function clickNode(target, backendNodeId) {
   const point = await nodeCenter(target, backendNodeId);
+  await moveCursor(target, point.x, point.y, true);
   await clickAt(target, point.x, point.y);
   return point;
 }
@@ -599,23 +548,34 @@ async function screenshot(tabId) {
   return { data, width: size.width, height: size.height };
 }
 
+async function axEntries(tabId) {
+  const target = { tabId };
+  const tree = await chrome.debugger.sendCommand(
+    target,
+    "Accessibility.getFullAXTree",
+    {},
+  );
+  return renderSnapshot(tree && tree.nodes);
+}
+
 async function snapshot(tabId) {
   const ready = await ensureAttached(tabId);
   if (isHandleError(ready)) return ready;
-  const target = { tabId };
-  const tree = await chrome.debugger.sendCommand(target, "Accessibility.getFullAXTree", {});
-  const nodes = flattenAx(tree && tree.nodes);
-  const refs = {};
-  const lines = [];
-  for (let i = 0; i < nodes.length; i++) {
-    const ref = "e" + (i + 1);
-    const node = nodes[i];
-    refs[ref] = { backendNodeId: node.backendNodeId };
-    lines.push(
-      node.name ? `[${ref}] ${node.role} "${node.name}"` : `[${ref}] ${node.role}`,
-    );
-  }
-  return { text: lines.join("\n"), refs };
+  const { text, refs } = await axEntries(tabId);
+  return { text, refs };
+}
+
+async function find(tabId, text, role) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const snap = await axEntries(tabId);
+  const hits = findMatches(snap.entries, { text, role });
+  return {
+    text: hits.map((h) => h.line).join("\n"),
+    matches: hits.length,
+    // Full map: a find result must stay clickable, and so must earlier refs.
+    refs: snap.refs,
+  };
 }
 
 async function click(tabId, backendNodeId) {
@@ -700,6 +660,460 @@ async function scroll(tabId, backendNodeId, direction, amount) {
   return {};
 }
 
+
+async function evalInPage(target, expression, opts) {
+  const res = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+    userGesture: true,
+    ...(opts || {}),
+  });
+  if (res && res.exceptionDetails) {
+    const ex = res.exceptionDetails.exception;
+    const message =
+      (ex && (ex.description || ex.value)) || res.exceptionDetails.text;
+    throw Object.assign(new Error(String(message)), { code: "debugger_failed" });
+  }
+  return res && res.result ? res.result.value : undefined;
+}
+
+async function callOnNode(target, backendNodeId, functionDeclaration, args) {
+  const resolved = await chrome.debugger.sendCommand(target, "DOM.resolveNode", {
+    backendNodeId,
+  });
+  const objectId = resolved && resolved.object && resolved.object.objectId;
+  if (!objectId) {
+    throw Object.assign(new Error("Could not resolve node"), {
+      code: "debugger_failed",
+    });
+  }
+  const res = await chrome.debugger.sendCommand(target, "Runtime.callFunctionOn", {
+    objectId,
+    functionDeclaration,
+    arguments: (args || []).map((value) => ({ value })),
+    returnByValue: true,
+    awaitPromise: true,
+    userGesture: true,
+  });
+  if (res && res.exceptionDetails) {
+    const ex = res.exceptionDetails.exception;
+    const message =
+      (ex && (ex.description || ex.value)) || res.exceptionDetails.text;
+    throw Object.assign(new Error(String(message)), { code: "debugger_failed" });
+  }
+  return res && res.result ? res.result.value : undefined;
+}
+
+
+/**
+ * Shadow mouse: a visible cursor so the user can watch what Grok is doing.
+ * It lives in a shadow root with aria-hidden so it never shows up in the
+ * accessibility snapshot or in chrome_text, and pointer-events:none keeps it
+ * from ever swallowing a click. Every cursor call is best-effort — a page
+ * with a strict CSP may refuse it, and that must not fail the real action.
+ */
+let cursorEnabled = true;
+
+const CURSOR_SETUP = `
+  const ID = "__grok_shadow_mouse__";
+  let host = document.getElementById(ID);
+  if (!host) {
+    host = document.createElement("div");
+    host.id = ID;
+    host.setAttribute("aria-hidden", "true");
+    const s = host.style;
+    s.position = "fixed";
+    s.left = "0px";
+    s.top = "0px";
+    s.width = "0px";
+    s.height = "0px";
+    s.zIndex = "2147483647";
+    s.pointerEvents = "none";
+    const root = host.attachShadow({ mode: "open" });
+
+    const wrap = document.createElement("div");
+    const w = wrap.style;
+    w.position = "fixed";
+    w.left = "0px";
+    w.top = "0px";
+    w.willChange = "transform";
+    w.transition = "transform 120ms cubic-bezier(.22,.61,.36,1)";
+    w.pointerEvents = "none";
+
+    const arrow = document.createElement("div");
+    arrow.innerHTML =
+      '<svg width="22" height="22" viewBox="0 0 20 20">' +
+      '<path d="M4 2 L4 18 L8 14 L10.5 19 L13.2 17.8 L10.7 13 L15 12.6 Z" ' +
+      'fill="#7C5CFF" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+    const a = arrow.style;
+    a.position = "absolute";
+    a.left = "0px";
+    a.top = "0px";
+    a.filter = "drop-shadow(0 1px 3px rgba(0,0,0,.45))";
+
+    const ring = document.createElement("div");
+    const r = ring.style;
+    r.position = "absolute";
+    r.left = "0px";
+    r.top = "0px";
+    r.width = "34px";
+    r.height = "34px";
+    r.marginLeft = "-17px";
+    r.marginTop = "-17px";
+    r.borderRadius = "50%";
+    r.border = "2px solid #7C5CFF";
+    r.opacity = "0";
+    r.transform = "scale(.3)";
+
+    wrap.appendChild(ring);
+    wrap.appendChild(arrow);
+    root.appendChild(wrap);
+    (document.body || document.documentElement).appendChild(host);
+    host.__grok = { wrap, ring };
+  }
+`;
+
+function cursorMoveJs(x, y, click) {
+  return `(() => {
+${CURSOR_SETUP}
+  if (!host || !host.__grok) return false;
+  const { wrap, ring } = host.__grok;
+  wrap.style.transform = "translate(${Number(x)}px, ${Number(y)}px)";
+  if (${click ? "true" : "false"}) {
+    ring.style.transition = "none";
+    ring.style.opacity = "0.9";
+    ring.style.transform = "scale(.3)";
+    requestAnimationFrame(() => {
+      ring.style.transition = "transform 320ms ease-out, opacity 320ms ease-out";
+      ring.style.opacity = "0";
+      ring.style.transform = "scale(1.15)";
+    });
+  }
+  return true;
+})()`;
+}
+
+async function moveCursor(target, x, y, click) {
+  if (!cursorEnabled) return;
+  try {
+    await evalInPage(target, cursorMoveJs(x, y, Boolean(click)));
+  } catch {
+    // never let the overlay break the action it is illustrating
+  }
+}
+
+async function removeCursor(target) {
+  try {
+    await evalInPage(
+      target,
+      `(() => { const n = document.getElementById("__grok_shadow_mouse__"); if (n) n.remove(); return true; })()`,
+    );
+  } catch {
+    // nothing to clean up
+  }
+}
+
+async function setCursor(tabId, show) {
+  cursorEnabled = show !== false;
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  if (cursorEnabled) await moveCursor({ tabId }, 0, 0, false);
+  else await removeCursor({ tabId });
+  return { cursor: cursorEnabled };
+}
+
+async function closeTab(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  if (attached.has(tabId)) {
+    attached.delete(tabId);
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // the tab is going away anyway
+    }
+  }
+  await chrome.tabs.remove(tabId);
+  return { closedTabId: tabId };
+}
+
+async function hover(tabId, backendNodeId) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  const point = await nodeCenter(target, backendNodeId);
+  await moveCursor(target, point.x, point.y);
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+  });
+  return {};
+}
+
+async function drag(tabId, backendNodeId, toBackendNodeId) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  const from = await nodeCenter(target, backendNodeId);
+  const to = await nodeCenter(target, toBackendNodeId);
+
+  await moveCursor(target, from.x, from.y);
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: from.x,
+    y: from.y,
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: from.x,
+    y: from.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  // Intermediate moves: drag handlers that watch pointermove ignore a jump.
+  const steps = 10;
+  for (let i = 1; i <= steps; i++) {
+    const x = from.x + ((to.x - from.x) * i) / steps;
+    const y = from.y + ((to.y - from.y) * i) / steps;
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+      button: "left",
+      buttons: 1,
+    });
+    await moveCursor(target, x, y);
+  }
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: to.x,
+    y: to.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  return {};
+}
+
+async function press(tabId, backendNodeId, key) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const combo = parseKey(key);
+  if (!combo) {
+    return fail(
+      "invalid_input",
+      `Unknown key "${key}". Try Enter, Tab, Escape, ArrowDown, or Control+a.`,
+    );
+  }
+  const target = { tabId };
+  if (typeof backendNodeId === "number") await clickNode(target, backendNodeId);
+  const base = {
+    key: combo.key,
+    code: combo.code,
+    windowsVirtualKeyCode: combo.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: combo.windowsVirtualKeyCode,
+    modifiers: combo.modifiers,
+  };
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...base,
+    type: combo.text ? "keyDown" : "rawKeyDown",
+    ...(combo.text ? { text: combo.text } : {}),
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...base,
+    type: "keyUp",
+  });
+  return {};
+}
+
+const SELECT_OPTION_FN = `function (values) {
+  if (this.tagName !== "SELECT") throw new Error("Not a <select> element");
+  const wanted = new Set(values);
+  let matched = 0;
+  for (const option of this.options) {
+    const hit =
+      wanted.has(option.value) ||
+      wanted.has(option.label) ||
+      wanted.has(option.text);
+    option.selected = hit;
+    if (hit) matched++;
+  }
+  if (!matched) throw new Error("No option matched " + JSON.stringify(values));
+  this.dispatchEvent(new Event("input", { bubbles: true }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return matched;
+}`;
+
+async function selectOption(tabId, backendNodeId, values) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const list = Array.isArray(values) ? values.map(String) : [];
+  if (!list.length) return fail("invalid_input", "values must not be empty");
+  const selected = await callOnNode({ tabId }, backendNodeId, SELECT_OPTION_FN, [
+    list,
+  ]);
+  return { selected };
+}
+
+async function uploadFile(tabId, backendNodeId, paths) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const files = Array.isArray(paths) ? paths.map(String) : [];
+  if (!files.length) return fail("invalid_input", "paths must not be empty");
+  if (files.some((f) => !f.startsWith("/"))) {
+    return fail("invalid_input", "file paths must be absolute");
+  }
+  await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
+    backendNodeId,
+    files,
+  });
+  return { files };
+}
+
+async function historyGo(tabId, direction) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  const pending = waitComplete(tabId, NAVIGATE_TIMEOUT_MS);
+  try {
+    if (direction === "back") await chrome.tabs.goBack(tabId);
+    else await chrome.tabs.goForward(tabId);
+  } catch (e) {
+    pending.cancel();
+    return fail("invalid_input", (e && e.message) || `Cannot go ${direction}`);
+  }
+  try {
+    return tabResult(await pending);
+  } catch (e) {
+    if (e && e.code === "timeout") return fail("timeout", e.message);
+    return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+}
+
+async function reload(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  const pending = waitComplete(tabId, NAVIGATE_TIMEOUT_MS);
+  try {
+    await chrome.tabs.reload(tabId);
+  } catch (e) {
+    pending.cancel();
+    return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+  try {
+    return tabResult(await pending);
+  } catch (e) {
+    if (e && e.code === "timeout") return fail("timeout", e.message);
+    return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+}
+
+async function evaluate(tabId, expression) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  if (typeof expression !== "string" || !expression.trim()) {
+    return fail("invalid_input", "expression must be a non-empty string");
+  }
+  // Wrapped so the caller can write either an expression or a statement body.
+  const value = await evalInPage(
+    { tabId },
+    `(async () => { return (${expression}); })()`,
+  );
+  return { value: value === undefined ? null : value };
+}
+
+async function resizeWindow(tabId, width, height) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  const want = { width: Math.round(width), height: Math.round(height) };
+  if (!(want.width > 0 && want.height > 0)) {
+    return fail("invalid_input", "width and height must be positive");
+  }
+  await chrome.windows.update(tab.windowId, {
+    state: "normal",
+    width: want.width,
+    height: want.height,
+  });
+
+  // Window bounds include the browser chrome, so correct once against the
+  // viewport the page actually sees.
+  const measure = async () => {
+    const ready = await ensureAttached(tabId);
+    if (isHandleError(ready)) return null;
+    const metrics = await chrome.debugger.sendCommand(
+      { tabId },
+      "Page.getLayoutMetrics",
+      {},
+    );
+    return viewportFromMetrics(metrics);
+  };
+
+  let viewport = await measure();
+  if (viewport && (viewport.width !== want.width || viewport.height !== want.height)) {
+    const win = await chrome.windows.get(tab.windowId);
+    await chrome.windows.update(tab.windowId, {
+      width: win.width + (want.width - viewport.width),
+      height: win.height + (want.height - viewport.height),
+    });
+    viewport = (await measure()) || viewport;
+  }
+  return {
+    width: viewport ? viewport.width : want.width,
+    height: viewport ? viewport.height : want.height,
+  };
+}
+
+async function pageText(tabId, maxChars) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const cap =
+    typeof maxChars === "number" && maxChars > 0
+      ? Math.min(maxChars, TEXT_HARD_CAP)
+      : TEXT_DEFAULT_CAP;
+  const text = await evalInPage(
+    { tabId },
+    "(document.body && document.body.innerText) || document.documentElement.innerText || ''",
+  );
+  const full = typeof text === "string" ? text : "";
+  return { text: full.slice(0, cap), truncated: full.length > cap };
+}
+
+async function waitFor(tabId, text, textGone, timeoutMs) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  if (!text && !textGone) {
+    return fail("invalid_input", "waitFor needs text or textGone");
+  }
+  const budget =
+    typeof timeoutMs === "number" && timeoutMs > 0
+      ? Math.min(timeoutMs, NAVIGATE_TIMEOUT_MS)
+      : 10000;
+  const started = Date.now();
+  const needle = JSON.stringify(String(text || textGone));
+  const expression = `((document.body && document.body.innerText) || "").includes(${needle})`;
+
+  while (Date.now() - started < budget) {
+    let present = false;
+    try {
+      present = Boolean(await evalInPage({ tabId }, expression));
+    } catch {
+      // page mid-navigation: try again on the next tick
+    }
+    if (text ? present : !present) {
+      return { waitedMs: Date.now() - started, matched: true };
+    }
+    await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
+  }
+  return fail(
+    "timeout",
+    text
+      ? `Timed out waiting for "${text}" after ${budget}ms`
+      : `Timed out waiting for "${textGone}" to disappear after ${budget}ms`,
+  );
+}
+
 async function readConsole(tabId, level, limit) {
   const ready = await ensureAttached(tabId);
   if (isHandleError(ready)) return ready;
@@ -754,6 +1168,41 @@ async function handle(msg) {
         params.backendNodeId,
         params.direction,
         params.amount,
+      );
+    case "cursor":
+      return setCursor(params.tabId, params.show);
+    case "closeTab":
+      return closeTab(params.tabId);
+    case "hover":
+      return hover(params.tabId, params.backendNodeId);
+    case "drag":
+      return drag(params.tabId, params.backendNodeId, params.toBackendNodeId);
+    case "press":
+      return press(params.tabId, params.backendNodeId, params.key);
+    case "selectOption":
+      return selectOption(params.tabId, params.backendNodeId, params.values);
+    case "uploadFile":
+      return uploadFile(params.tabId, params.backendNodeId, params.paths);
+    case "back":
+      return historyGo(params.tabId, "back");
+    case "forward":
+      return historyGo(params.tabId, "forward");
+    case "reload":
+      return reload(params.tabId);
+    case "evaluate":
+      return evaluate(params.tabId, params.expression);
+    case "resize":
+      return resizeWindow(params.tabId, params.width, params.height);
+    case "text":
+      return pageText(params.tabId, params.maxChars);
+    case "find":
+      return find(params.tabId, params.text, params.role);
+    case "waitFor":
+      return waitFor(
+        params.tabId,
+        params.text,
+        params.textGone,
+        params.timeoutMs,
       );
     case "console":
       return readConsole(params.tabId, params.level, params.limit);

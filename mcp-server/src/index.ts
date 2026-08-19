@@ -1,10 +1,11 @@
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+  BRIDGE_FILE,
+  removeBridgeFile,
+  writeBridgeFile,
+} from "./bridge-file.js";
 import { startBridge } from "./bridge-http.js";
 import { screenshotContent } from "./content.js";
 import type { Bridge } from "./protocol.js";
@@ -13,9 +14,6 @@ import { createTools } from "./tools.js";
 
 const GRANT_HINT =
   "May return needs_permission; ask the user, then call chrome_grant_site.";
-
-const BRIDGE_DIR = path.join(os.homedir(), ".grok");
-const BRIDGE_FILE = path.join(BRIDGE_DIR, "chrome-bridge.json");
 
 function bindFailedBridge(): Bridge {
   return {
@@ -44,21 +42,6 @@ function textResult(result: unknown) {
   };
 }
 
-async function writeBridgeFile(port: number): Promise<void> {
-  await fsp.mkdir(BRIDGE_DIR, { recursive: true });
-  const body = JSON.stringify({ port, pid: process.pid });
-  await fsp.writeFile(BRIDGE_FILE, body, { mode: 0o600 });
-  await fsp.chmod(BRIDGE_FILE, 0o600);
-}
-
-function removeBridgeFile(): void {
-  try {
-    fs.unlinkSync(BRIDGE_FILE);
-  } catch {
-    // already gone
-  }
-}
-
 async function main(): Promise<void> {
   let bridge: Bridge;
   try {
@@ -68,7 +51,7 @@ async function main(): Promise<void> {
   }
   if (bridge.port !== 0) {
     try {
-      await writeBridgeFile(bridge.port);
+      await writeBridgeFile(BRIDGE_FILE, bridge.port);
     } catch {
       // status file is best-effort for humans / CLI smoke
     }
@@ -232,6 +215,161 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "chrome_close_tab",
+    {
+      description:
+        "Closes a tab. Free for tabs Grok opened; closing one of the user's own tabs needs a grant.",
+      inputSchema: { tabId: z.number().optional() },
+    },
+    async ({ tabId }) => textResult(await tools.closeTab(tabId)),
+  );
+
+  server.registerTool(
+    "chrome_hover",
+    {
+      description: `Moves the pointer over a snapshot ref, firing hover handlers. ${GRANT_HINT}`,
+      inputSchema: { ref: z.string() },
+    },
+    async ({ ref }) => textResult(await tools.hover(ref)),
+  );
+
+  server.registerTool(
+    "chrome_drag",
+    {
+      description: `Drags one snapshot ref onto another with intermediate pointer moves. ${GRANT_HINT}`,
+      inputSchema: { ref: z.string(), toRef: z.string() },
+    },
+    async ({ ref, toRef }) => textResult(await tools.drag(ref, toRef)),
+  );
+
+  server.registerTool(
+    "chrome_press",
+    {
+      description: `Presses a key or combination, e.g. Enter, Tab, Escape, ArrowDown, Control+a, Meta+Shift+p. Optionally focuses a ref first. ${GRANT_HINT}`,
+      inputSchema: { key: z.string(), ref: z.string().optional() },
+    },
+    async ({ key, ref }) => textResult(await tools.press(key, ref)),
+  );
+
+  server.registerTool(
+    "chrome_select_option",
+    {
+      description: `Selects options in a <select> by value or visible label. ${GRANT_HINT}`,
+      inputSchema: { ref: z.string(), values: z.array(z.string()) },
+    },
+    async ({ ref, values }) => textResult(await tools.selectOption(ref, values)),
+  );
+
+  server.registerTool(
+    "chrome_upload_file",
+    {
+      description: `Sets absolute local file paths on a file input. Hands those files to the page, so only use paths the user named. ${GRANT_HINT}`,
+      inputSchema: { ref: z.string(), paths: z.array(z.string()) },
+    },
+    async ({ ref, paths }) => textResult(await tools.uploadFile(ref, paths)),
+  );
+
+  server.registerTool(
+    "chrome_back",
+    {
+      description: `Goes back one entry in the target tab's history. ${GRANT_HINT}`,
+    },
+    async () => textResult(await tools.back()),
+  );
+
+  server.registerTool(
+    "chrome_forward",
+    {
+      description: `Goes forward one entry in the target tab's history. ${GRANT_HINT}`,
+    },
+    async () => textResult(await tools.forward()),
+  );
+
+  server.registerTool(
+    "chrome_reload",
+    {
+      description: `Reloads the target tab and waits for load. ${GRANT_HINT}`,
+    },
+    async () => textResult(await tools.reload()),
+  );
+
+  server.registerTool(
+    "chrome_evaluate",
+    {
+      description: `Runs a JavaScript expression in the page and returns its value (awaited, JSON-serialisable). Powerful: it can read and change anything on the page. ${GRANT_HINT}`,
+      inputSchema: { expression: z.string() },
+    },
+    async ({ expression }) => textResult(await tools.evaluate(expression)),
+  );
+
+  server.registerTool(
+    "chrome_resize",
+    {
+      description:
+        "Resizes the window so the page viewport matches the requested size. No origin grant required.",
+      inputSchema: { width: z.number(), height: z.number() },
+    },
+    async ({ width, height }) => textResult(await tools.resize(width, height)),
+  );
+
+  server.registerTool(
+    "chrome_text",
+    {
+      description:
+        "Visible text of the target tab, capped and flagged when truncated. Read-only; no origin grant required.",
+      inputSchema: { maxChars: z.number().optional() },
+    },
+    async ({ maxChars }) => textResult(await tools.pageText(maxChars)),
+  );
+
+  server.registerTool(
+    "chrome_find",
+    {
+      description:
+        "Finds elements by visible text and/or role, returning refs from the same numbering as chrome_snapshot. Read-only; no origin grant required.",
+      inputSchema: { text: z.string().optional(), role: z.string().optional() },
+    },
+    async ({ text, role }) => textResult(await tools.find(text, role)),
+  );
+
+  server.registerTool(
+    "chrome_wait_for",
+    {
+      description:
+        "Waits until text appears (text) or disappears (textGone) on the page. Read-only; no origin grant required.",
+      inputSchema: {
+        text: z.string().optional(),
+        textGone: z.string().optional(),
+        timeoutMs: z.number().optional(),
+      },
+    },
+    async ({ text, textGone, timeoutMs }) =>
+      textResult(await tools.waitFor({ text, textGone, timeoutMs })),
+  );
+
+  server.registerTool(
+    "chrome_cursor",
+    {
+      description:
+        "Shows or hides the shadow mouse — the on-page cursor overlay that lets the user watch what Grok clicks.",
+      inputSchema: { show: z.boolean() },
+    },
+    async ({ show }) => textResult(await tools.cursor(show)),
+  );
+
+  server.registerTool(
+    "chrome_batch",
+    {
+      description:
+        "Runs a short fixed sequence of actions in one round-trip, stopping at the first failure. Each action is {tool, ...params} where tool is click, type, fill, press, hover, drag, selectOption, scroll, navigate, waitFor, or snapshot. Each action is permission-checked exactly as if called on its own.",
+      inputSchema: {
+        actions: z.array(z.record(z.string(), z.unknown())).min(1),
+      },
+    },
+    async ({ actions }) => textResult(await tools.batch(actions)),
+  );
+
+  server.registerTool(
     "chrome_console",
     {
       description:
@@ -264,7 +402,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    removeBridgeFile();
+    removeBridgeFile(BRIDGE_FILE);
     await bridge.close();
   };
 

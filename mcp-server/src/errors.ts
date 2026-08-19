@@ -5,6 +5,7 @@ export type ErrorCode =
   | "blocked_origin"
   | "needs_permission"
   | "invalid_origin"
+  | "invalid_input"
   | "stale_ref"
   | "timeout"
   | "debugger_failed";
