@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { installExtension, parseCli, renderConfigBlock } from "../src/cli.js";
+import {
+  defaultServeInvocation,
+  installExtension,
+  parseCli,
+  renderConfigBlock,
+} from "../src/cli.js";
 
 describe("parseCli", () => {
   it("runs the MCP server when given no arguments", () => {
@@ -31,6 +36,36 @@ describe("renderConfigBlock", () => {
     expect(block).toContain("[mcp_servers.grok-chrome]");
     expect(block).toContain('command = "npx"');
     expect(block).toContain('"grok-chrome-mcp"');
+  });
+
+  it("prints a node path when setup is run from a git clone", () => {
+    const block = renderConfigBlock({
+      command: "node",
+      args: ["/abs/path/mcp-server/dist/index.js"],
+    });
+    expect(block).toContain('command = "node"');
+    expect(block).toContain('"/abs/path/mcp-server/dist/index.js"');
+    expect(block).not.toContain("npx");
+  });
+});
+
+describe("defaultServeInvocation", () => {
+  it("uses node when the entry is a clone's dist/index.js", () => {
+    const r = defaultServeInvocation("/tmp/grok-chrome-mcp/mcp-server/dist/index.js");
+    expect(r).toEqual({
+      command: "node",
+      args: [path.resolve("/tmp/grok-chrome-mcp/mcp-server/dist/index.js")],
+    });
+  });
+
+  it("uses npx when the entry is an npm or npx install", () => {
+    expect(
+      defaultServeInvocation("/tmp/node_modules/grok-chrome-mcp/dist/index.js")
+        .command,
+    ).toBe("npx");
+    expect(defaultServeInvocation("/tmp/_npx/abc/dist/index.js").command).toBe(
+      "npx",
+    );
   });
 });
 

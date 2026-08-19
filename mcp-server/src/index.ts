@@ -13,6 +13,7 @@ import {
 import { startBridge } from "./bridge-http.js";
 import {
   EXTENSION_HOME,
+  defaultServeInvocation,
   helpText,
   installExtension,
   parseCli,
@@ -89,12 +90,12 @@ async function runCli(): Promise<boolean> {
     return true;
   }
   if (cli.command === "help") {
-    console.log(helpText(packageVersion()));
+    console.log(helpText(packageVersion(), defaultServeInvocation()));
     return true;
   }
   try {
     const result = await installExtension(packagedExtensionDir(), EXTENSION_HOME);
-    console.log(setupText(result));
+    console.log(setupText(result, defaultServeInvocation()));
   } catch (err) {
     console.error((err as Error).message);
     process.exitCode = 1;

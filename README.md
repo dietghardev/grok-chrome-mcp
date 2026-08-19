@@ -1,41 +1,83 @@
 <h1 align="center">grok-chrome-mcp</h1>
 
 <p align="center">
-  <b>Give Grok Build hands in your own Chrome.</b><br>
-  An MCP server + unpacked extension that lets Grok open tabs, read pages, click,
-  type, run JavaScript, watch the console and network, and record what it did —
-  in the browser you already use, with the sessions you are already logged into.
+  <b>Let Grok Build click through the app you are writing.</b><br>
+  Grok opens tabs in the Chrome you already use, fills forms, reads the
+  console and network, takes screenshots, and records a GIF of the run.
+  Your cookies stay put. No second browser profile. No Playwright.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <a href="https://www.npmjs.com/package/grok-chrome-mcp"><img alt="npm" src="https://img.shields.io/npm/v/grok-chrome-mcp.svg"></a>
   <a href="https://github.com/dietghardev/grok-chrome-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dietghardev/grok-chrome-mcp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg">
-  <img alt="tests" src="https://img.shields.io/badge/tests-122%20passing-brightgreen.svg">
+  <img alt="tests" src="https://img.shields.io/badge/tests-125%20passing-brightgreen.svg">
 </p>
 
 <p align="center">
   <img src="docs/demo.gif" alt="Grok filling a login form in Chrome, with the shadow mouse cursor visible on the button it clicks" width="820">
 </p>
 
----
+You stay in the Grok Build TUI. Grok works in tabs it opens, grouped under
+**Grok**. It does not steal the tab you are looking at. The first time it
+needs to act on a site, it asks; a refused action never reaches Chrome.
 
-Claude has an official Chrome extension. Grok does not. This is that, for Grok
-Build — 35 tools over MCP, no forked client, no second browser profile, no
-`--remote-debugging-port`, no native messaging host.
+Works in Chrome, Edge, Brave, Opera, and Vivaldi. Connect more than one and
+pick with `chrome_select_browser`.
 
-- **Your real browser.** Grok works in tabs it opens in your daily Chrome, so
-  your cookies and logins are just there. It never hijacks the tab you are
-  looking at.
-- **You can watch it work.** A *shadow mouse* — a cursor overlay drawn in the
-  page — moves to whatever Grok is about to click and ripples when it does.
-- **Permission per origin.** Reading is free; acting on a site needs your
-  consent for that origin, and a refused action never reaches Chrome at all.
-- **Debugging, not just clicking.** Console messages, network requests,
-  accessibility snapshots, page text, and animated-GIF recordings of a run.
-- **Chrome, Edge, Brave, Opera, Vivaldi** — connect several at once and pick
-  which one Grok drives.
+Claude has an official Chrome extension. This is that, for Grok Build: 35
+tools over MCP, no forked client, no `--remote-debugging-port`, no native
+messaging host.
+
+## What you can ask
+
+Paste these into Grok after you are connected:
+
+> open http://localhost:3000, sign in as test@example.com / password123,
+> and tell me what the console says
+
+> the submit button does nothing. screenshot the form, click it, and show me
+> the network calls that fire
+
+> fill the signup form, wait until you see Welcome back, and save a GIF of
+> the run to /tmp/signup.gif
+
+You do not call the 35 tools yourself. Ask in chat. Grok snapshots the page,
+clicks refs, and grants an origin only after you agree.
+
+## Install
+
+The package is not on the npm registry yet. Run it from a clone (Node 20+).
+
+```bash
+git clone https://github.com/dietghardev/grok-chrome-mcp.git
+cd grok-chrome-mcp/mcp-server
+npm install && npm run build
+node dist/index.js setup
+```
+
+`setup` copies the extension to `~/.grok/grok-chrome-extension` and prints
+the Grok config for this tree.
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the folder `setup` printed.
+2. Paste the printed block into `~/.grok/config.toml`. It should look like:
+
+   ```toml
+   [mcp_servers.grok-chrome]
+   command = "node"
+   args = ["/absolute/path/to/grok-chrome-mcp/mcp-server/dist/index.js"]
+   enabled = true
+   ```
+
+3. Restart Grok and pin the extension. The popup goes from `waiting for Grok` to `connected`.
+
+After you pull and rebuild, hit reload (↻) on the card at `chrome://extensions`
+so Chrome picks up the new version.
+
+Edge, Brave, Opera, and Vivaldi load the same folder. Every connected browser
+registers itself; `chrome_browsers` lists them.
+
+## How it works
 
 ```
 Grok Build TUI
@@ -47,66 +89,22 @@ mcp-server (Node)                 in-memory origin allowlist, serial queue
 MV3 extension  ──chrome.debugger (CDP)──▶  a tab Grok opened
 ```
 
-## Quick start
+- **Your real browser.** Tabs Grok opens share the cookies and logins you already have.
+- **You can watch it.** A shadow mouse, a cursor overlay on the page, moves to whatever Grok is about to click and ripples when it does.
+- **Permission per origin.** Reading is free. Acting on a site needs your consent for that origin.
+- **Debugging, not only clicking.** Console, network, accessibility snapshots, page text, screenshots, GIFs.
 
-```bash
-npx -y grok-chrome-mcp setup
-```
+## Permission model
 
-That prints a folder to load and the config to paste. In full:
-
-1. **Install the extension** — run the command above, then open
-   `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
-   and choose the folder it printed (`~/.grok/grok-chrome-extension`).
-2. **Tell Grok about it** — add to `~/.grok/config.toml`:
-
-   ```toml
-   [mcp_servers.grok-chrome]
-   command = "npx"
-   args = ["-y", "grok-chrome-mcp"]
-   enabled = true
-   ```
-
-3. **Restart Grok** and pin the extension. Its popup goes from
-   `waiting for Grok` to `connected`.
-
-Then just ask, in the TUI:
-
-> open localhost:3000, sign in as test@example.com, and tell me what the
-> console says
-
-Grok will ask before it touches the site the first time.
-
-## From source
-
-
-```bash
-git clone https://github.com/dietghardev/grok-chrome-mcp.git
-cd grok-chrome-mcp/mcp-server && npm install && npm run build && npm test
-```
-
-Load `extension/` unpacked as above, and point Grok at the build:
-
-```toml
-[mcp_servers.grok-chrome]
-command = "node"
-args = ["/absolute/path/to/grok-chrome-mcp/mcp-server/dist/index.js"]
-```
-
-Edge, Brave, Opera, and Vivaldi work too — load the same folder there. Every
-connected browser registers itself; `chrome_browsers` lists them and
-`chrome_select_browser` picks which one later tools drive.
+A mutating tool on an ungranted origin returns `needs_permission` and sends
+**nothing** to Chrome. Grok should ask you, then call `chrome_grant_site`.
+Grants live in the MCP process memory only: they never touch disk and die
+when Grok exits. `localhost:3000`, `localhost:5173`, and `127.0.0.1:3000`
+are three separate grants.
 
 ## Tools
 
-**Permission model.** Reading is free; acting on a page needs the user's
-consent for that origin. A mutating tool called on an ungranted origin returns
-`needs_permission` and sends **nothing** to Chrome — Grok is expected to ask
-you in chat, then call `chrome_grant_site`. Grants live in the MCP process's
-memory only: they never touch disk and die when Grok exits. `localhost:3000`,
-`localhost:5173`, and `127.0.0.1:3000` are three separate grants.
-
-| Read-only — no grant | |
+| Read-only, no grant | |
 |---|---|
 | `chrome_tabs` | open tabs and the current target |
 | `chrome_page` | target tab's URL and title |
@@ -137,25 +135,42 @@ Housekeeping: `chrome_grant_site`, `chrome_revoke_site`, `chrome_use_tab`,
 `chrome_select_browser`.
 
 Refs come from `chrome_snapshot` or `chrome_find` and belong to the newest
-snapshot of that tab; an older ref returns `stale_ref` rather than clicking
+snapshot of that tab. An older ref returns `stale_ref` rather than clicking
 whatever now sits in that position.
 
-## Manual fixture pass
+## Try it against the fixture
 
 ```bash
 npx --yes serve mcp-server/fixture -p 4173
 ```
 
 In Grok: grant `http://localhost:4173`, then open it and work through the
-sections — sign in and read `login failed` from the console, wait for
+sections. Sign in and read `login failed` from the console, wait for
 `Welcome back`, choose a colour, hover, drag the chip into the drop zone,
 scroll to the bottom, and record a GIF of the run.
 
-Then: quit Chrome mid-session — the next tool call reports
+Then quit Chrome mid-session. The next tool call reports
 `extension_disconnected` immediately rather than hanging. Reopen Chrome and it
 reconnects on its own.
 
-## Errors
+## If something goes wrong
+
+**Popup stays `waiting for Grok`.** Grok is not running this server, or the
+extension cannot reach `127.0.0.1:17352`–`17361`. Restart Grok. Confirm
+`config.toml` points at this clone's `mcp-server/dist/index.js`.
+
+**Chrome shows a debugger banner.** Expected. The extension uses
+`chrome.debugger` on tabs Grok opened. Cancel the session from that banner
+and the next command re-attaches.
+
+**Tool returns `extension_disconnected`.** Chrome is closed or the extension
+was reloaded. Reopen Chrome; it reconnects on its own.
+
+**Tool returns `needs_permission`.** Agree in chat so Grok can call
+`chrome_grant_site`. Grants die when Grok exits.
+
+**`npx grok-chrome-mcp` is not found.** The package is not published. Use the
+clone steps under [Install](#install).
 
 Every failure is one of these codes, as JSON the model can act on:
 `extension_disconnected`, `bridge_bind_failed`, `no_tab`, `blocked_origin`,
@@ -164,24 +179,15 @@ Every failure is one of these codes, as JSON the model can act on:
 
 ## Safety
 
-- The bridge binds `127.0.0.1` only. Any process on this Mac can still reach
-  that port — the same class of risk as a token under `~/.grok/`.
-- `chrome://`, `chrome-extension://`, `edge://`, `brave://`, `opera://`,
-  `vivaldi://`, `devtools://`, `view-source:`, `file://`, `data:`, and the
-  Chrome / Edge Web Stores are refused outright, for reading as well as acting.
-- Grok works in tabs it opened (grouped under **Grok**) unless you point it at
-  one of yours with `chrome_use_tab` — and even then, acting still needs the
-  grant.
-- `chrome_evaluate` and `chrome_upload_file` are the sharp ones: the first runs
-  arbitrary JavaScript in the page, the second hands local files to it. Both
-  need a grant; only pass file paths you chose.
-- Page content is untrusted input. Snapshots and screenshots can carry prompt
-  injection, so don't grant origins you don't trust — there is no second
-  classifier here.
+- The bridge binds `127.0.0.1` only. Any process on this machine can still reach that port. Same class of risk as a token under `~/.grok/`.
+- `chrome://`, `chrome-extension://`, `edge://`, `brave://`, `opera://`, `vivaldi://`, `devtools://`, `view-source:`, `file://`, `data:`, and the Chrome / Edge Web Stores are refused outright, for reading as well as acting.
+- Grok works in tabs it opened unless you point it at one of yours with `chrome_use_tab`. Acting still needs the grant.
+- `chrome_evaluate` and `chrome_upload_file` are the sharp ones: the first runs arbitrary JavaScript in the page, the second hands local files to it. Both need a grant. Only pass file paths you chose. Neither runs on `about:blank`.
+- Page content is untrusted input. Snapshots and screenshots can carry prompt injection. Do not grant origins you do not trust. There is no second classifier here.
 
 ## Contributing
 
-Issues and pull requests welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 Security reports go through [private advisories](SECURITY.md), not public
 issues.
 
@@ -194,10 +200,8 @@ npm run smoke       # bridge protocol + MCP stdio surface, no Chrome needed
 npm run build
 ```
 
-### End-to-end
-
 `npm run e2e` drives a real browser through the whole tool surface against the
-fixture — permission gating, snapshot, fill, click, wait, console, network,
+fixture: permission gating, snapshot, fill, click, wait, console, network,
 select, evaluate, keyboard, screenshot, GIF, blocked origins, tab close.
 
 Google Chrome stable refuses `--load-extension`, so pick a mode:
@@ -211,8 +215,8 @@ E2E_USE_CONNECTED=1 npm run e2e
 CHROME_PATH=/path/to/chromium npm run e2e
 ```
 
-The connected mode requires the loaded extension to match this tree's version —
-after editing `extension/`, hit reload (↻) on the card at `chrome://extensions`
+The connected mode requires the loaded extension to match this tree's version.
+After editing `extension/`, hit reload (↻) on the card at `chrome://extensions`
 or the run will tell you to.
 
 The pure logic the extension depends on lives in `extension/lib/` (`keys.js`,
@@ -221,4 +225,4 @@ exercised by hand in a browser.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -27,11 +27,37 @@ export function parseCli(argv: string[]): Cli {
   return { command: "help" };
 }
 
-export function renderConfigBlock(): string {
+export type ServeInvocation = { command: string; args: string[] };
+
+const NPX_INVOCATION: ServeInvocation = {
+  command: "npx",
+  args: ["-y", PACKAGE_NAME],
+};
+
+/**
+ * Config Grok should spawn. From a clone that is `node dist/index.js`; from
+ * an npm/npx install it stays the one-liner. Printing npx from a clone told
+ * people to run a package that is not on the registry.
+ */
+export function defaultServeInvocation(
+  entryPath = process.argv[1],
+): ServeInvocation {
+  const entry = entryPath ? path.resolve(entryPath) : "";
+  const fromPackage =
+    entry.includes(`${path.sep}node_modules${path.sep}`) ||
+    entry.includes(`${path.sep}_npx${path.sep}`);
+  if (!entry || fromPackage) return NPX_INVOCATION;
+  return { command: "node", args: [entry] };
+}
+
+export function renderConfigBlock(
+  invocation: ServeInvocation = NPX_INVOCATION,
+): string {
+  const args = invocation.args.map((value) => JSON.stringify(value)).join(", ");
   return [
     "[mcp_servers.grok-chrome]",
-    'command = "npx"',
-    `args = ["-y", "${PACKAGE_NAME}"]`,
+    `command = ${JSON.stringify(invocation.command)}`,
+    `args = [${args}]`,
     "enabled = true",
   ].join("\n");
 }
@@ -69,21 +95,30 @@ export async function installExtension(
   return { path: dest, version };
 }
 
-export function helpText(version: string): string {
+export function helpText(
+  version: string,
+  invocation: ServeInvocation = NPX_INVOCATION,
+): string {
+  const bin = invocation.command === "npx"
+    ? `npx ${PACKAGE_NAME}`
+    : `${invocation.command} ${invocation.args.join(" ")}`;
   return `${PACKAGE_NAME} v${version} — drive your Chrome from Grok Build
 
 Usage:
-  npx ${PACKAGE_NAME}            start the MCP server (this is what Grok runs)
-  npx ${PACKAGE_NAME} setup      install the Chrome extension and print next steps
-  npx ${PACKAGE_NAME} --version  print the version
+  ${bin}            start the MCP server (this is what Grok runs)
+  ${bin} setup      install the Chrome extension and print next steps
+  ${bin} --version  print the version
 
 Add to ~/.grok/config.toml:
 
-${renderConfigBlock()}
+${renderConfigBlock(invocation)}
 `;
 }
 
-export function setupText(result: InstallResult): string {
+export function setupText(
+  result: InstallResult,
+  invocation: ServeInvocation = NPX_INVOCATION,
+): string {
   return `Grok Chrome extension v${result.version} installed.
 
 1. Open chrome://extensions and turn on Developer mode (top right).
@@ -93,9 +128,9 @@ export function setupText(result: InstallResult): string {
 
 3. Add this to ~/.grok/config.toml:
 
-${renderConfigBlock()}
+${renderConfigBlock(invocation)}
 
-4. Restart Grok. Pin the extension — it goes from "waiting for Grok" to
+4. Restart Grok. Pin the extension. It goes from "waiting for Grok" to
    "connected" once Grok starts.
 
 Works in Edge, Brave, Opera and Vivaldi too: load the same folder there.
