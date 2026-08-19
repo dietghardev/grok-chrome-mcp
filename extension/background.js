@@ -6,11 +6,25 @@ const RECONNECT_START_MS = 300;
 const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30000;
+const SCROLL_TICK_PX = 360;
 const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
 const WEBSTORE_HOSTS = new Set([
   "chrome.google.com",
   "chromewebstore.google.com",
 ]);
+const INTERACTIVE_ROLES = new Set([
+  "button",
+  "link",
+  "textbox",
+  "checkbox",
+  "radio",
+  "combobox",
+  "menuitem",
+  "tab",
+  "heading",
+  "searchbox",
+]);
+const attached = new Set();
 
 let connected = false;
 let ws = null;
@@ -184,6 +198,331 @@ async function navigate(tabId, url) {
   }
 }
 
+async function attach(tabId) {
+  const target = { tabId };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+  } catch (e) {
+    if (!String(e).includes("already attached")) {
+      throw Object.assign(new Error(String(e)), { code: "debugger_failed" });
+    }
+  }
+  attached.add(tabId);
+  await chrome.debugger.sendCommand(target, "Page.enable", {});
+  await chrome.debugger.sendCommand(target, "DOM.enable", {});
+  await chrome.debugger.sendCommand(target, "Runtime.enable", {});
+  await chrome.debugger.sendCommand(target, "Console.enable", {});
+  await chrome.debugger.sendCommand(target, "Network.enable", {});
+  await chrome.debugger.sendCommand(target, "Accessibility.enable", {});
+}
+
+async function ensureAttached(tabId) {
+  const tab = await getTab(tabId);
+  if (!tab) return fail("no_tab", `Tab ${tabId} not found`);
+  const url = tab.url || tab.pendingUrl || "";
+  if (isBlockedUrl(url)) {
+    return fail("blocked_origin", `Blocked origin: ${url}`);
+  }
+  await attach(tabId);
+  return { tabId };
+}
+
+function axString(ax) {
+  if (!ax || ax.value == null) return "";
+  return String(ax.value);
+}
+
+function flattenAx(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const byId = new Map();
+  for (const node of list) {
+    if (node && node.nodeId != null) byId.set(node.nodeId, node);
+  }
+  const out = [];
+  const seen = new Set();
+
+  function consider(node) {
+    if (!node || node.ignored) return;
+    if (node.backendDOMNodeId == null) return;
+    const roleRaw = axString(node.role);
+    const role = roleRaw.toLowerCase();
+    const name = axString(node.name).trim();
+    if (!name && !INTERACTIVE_ROLES.has(role)) return;
+    if (!name && role === "generic") return;
+    out.push({
+      role: roleRaw || "generic",
+      name,
+      backendNodeId: node.backendDOMNodeId,
+    });
+  }
+
+  function walk(node) {
+    if (!node || seen.has(node.nodeId)) return;
+    seen.add(node.nodeId);
+    consider(node);
+    for (const childId of node.childIds || []) {
+      walk(byId.get(childId));
+    }
+  }
+
+  const roots = list.filter((n) => n && (n.parentId == null || !byId.has(n.parentId)));
+  for (const root of roots.length ? roots : list) walk(root);
+  for (const node of list) {
+    if (node && !seen.has(node.nodeId)) walk(node);
+  }
+  return out;
+}
+
+function quadCenter(points) {
+  if (!points || points.length < 8) return null;
+  return {
+    x: (points[0] + points[2] + points[4] + points[6]) / 4,
+    y: (points[1] + points[3] + points[5] + points[7]) / 4,
+  };
+}
+
+function viewportFromMetrics(metrics) {
+  const vp =
+    (metrics && metrics.cssVisualViewport) ||
+    (metrics && metrics.visualViewport) ||
+    (metrics && metrics.cssLayoutViewport) ||
+    (metrics && metrics.layoutViewport) ||
+    {};
+  return {
+    width: Math.round(vp.clientWidth || 0),
+    height: Math.round(vp.clientHeight || 0),
+  };
+}
+
+async function nodeCenter(target, backendNodeId) {
+  try {
+    await chrome.debugger.sendCommand(target, "DOM.getDocument", { depth: 0 });
+  } catch {
+    // document may already be available
+  }
+  try {
+    await chrome.debugger.sendCommand(target, "DOM.pushNodesByBackendIdsToFrontend", {
+      backendNodeIds: [backendNodeId],
+    });
+  } catch {
+    // node may already be in the frontend document
+  }
+
+  let center = null;
+  try {
+    const { quads } = await chrome.debugger.sendCommand(target, "DOM.getContentQuads", {
+      backendNodeId,
+    });
+    if (quads && quads.length) center = quadCenter(quads[0]);
+  } catch {
+    // fall through to box model
+  }
+  if (!center) {
+    const { model } = await chrome.debugger.sendCommand(target, "DOM.getBoxModel", {
+      backendNodeId,
+    });
+    center = quadCenter(model && model.content);
+  }
+  if (!center) {
+    throw Object.assign(new Error("Could not resolve node box"), {
+      code: "debugger_failed",
+    });
+  }
+  return { x: center.x, y: center.y };
+}
+
+async function clickAt(target, x, y) {
+  const event = {
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  };
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    ...event,
+    type: "mousePressed",
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    ...event,
+    type: "mouseReleased",
+  });
+}
+
+async function clickNode(target, backendNodeId) {
+  const point = await nodeCenter(target, backendNodeId);
+  await clickAt(target, point.x, point.y);
+  return point;
+}
+
+async function pressEnter(target) {
+  const event = {
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  };
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...event,
+    type: "keyDown",
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...event,
+    type: "keyUp",
+  });
+}
+
+async function selectAll(target) {
+  let mac = false;
+  try {
+    const info = await chrome.runtime.getPlatformInfo();
+    mac = info && info.os === "mac";
+  } catch {
+    mac =
+      typeof navigator !== "undefined" &&
+      /Mac/i.test(navigator.platform || navigator.userAgent || "");
+  }
+  const modifiers = mac ? 4 : 2;
+  const event = {
+    key: "a",
+    code: "KeyA",
+    windowsVirtualKeyCode: 65,
+    nativeVirtualKeyCode: 65,
+    modifiers,
+  };
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...event,
+    type: "keyDown",
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+    ...event,
+    type: "keyUp",
+  });
+}
+
+async function insertText(target, text) {
+  await chrome.debugger.sendCommand(target, "Input.insertText", {
+    text: text == null ? "" : String(text),
+  });
+}
+
+async function screenshot(tabId) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  const metrics = await chrome.debugger.sendCommand(target, "Page.getLayoutMetrics", {});
+  const size = viewportFromMetrics(metrics);
+  const shot = await chrome.debugger.sendCommand(target, "Page.captureScreenshot", {
+    format: "png",
+  });
+  let data = (shot && shot.data) || "";
+  if (data.startsWith("data:")) {
+    const comma = data.indexOf(",");
+    if (comma !== -1) data = data.slice(comma + 1);
+  }
+  return { data, width: size.width, height: size.height };
+}
+
+async function snapshot(tabId) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  const tree = await chrome.debugger.sendCommand(target, "Accessibility.getFullAXTree", {});
+  const nodes = flattenAx(tree && tree.nodes);
+  const refs = {};
+  const lines = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const ref = "e" + (i + 1);
+    const node = nodes[i];
+    refs[ref] = { backendNodeId: node.backendNodeId };
+    lines.push(
+      node.name ? `[${ref}] ${node.role} "${node.name}"` : `[${ref}] ${node.role}`,
+    );
+  }
+  return { text: lines.join("\n"), refs };
+}
+
+async function click(tabId, backendNodeId) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  if (typeof backendNodeId !== "number") {
+    throw Object.assign(new Error("backendNodeId is required"), {
+      code: "debugger_failed",
+    });
+  }
+  await clickNode({ tabId }, backendNodeId);
+  return {};
+}
+
+async function typeIn(tabId, backendNodeId, text, submit) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  if (typeof backendNodeId === "number") {
+    await clickNode(target, backendNodeId);
+  }
+  await insertText(target, text);
+  if (submit) await pressEnter(target);
+  return {};
+}
+
+async function fill(tabId, backendNodeId, value) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  if (typeof backendNodeId !== "number") {
+    throw Object.assign(new Error("backendNodeId is required"), {
+      code: "debugger_failed",
+    });
+  }
+  const target = { tabId };
+  await clickNode(target, backendNodeId);
+  await selectAll(target);
+  try {
+    await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+      expression: "document.execCommand('selectAll'); document.execCommand('delete');",
+      userGesture: true,
+    });
+  } catch {
+    // key select-all still applied
+  }
+  await insertText(target, value);
+  return {};
+}
+
+async function scroll(tabId, backendNodeId, direction, amount) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const target = { tabId };
+  const ticks = amount == null ? 1 : Number(amount);
+  const mag = Number.isFinite(ticks) ? ticks : 1;
+  const delta = SCROLL_TICK_PX * mag;
+  let deltaX = 0;
+  let deltaY = 0;
+  if (direction === "down") deltaY = delta;
+  else if (direction === "up") deltaY = -delta;
+  else if (direction === "right") deltaX = delta;
+  else if (direction === "left") deltaX = -delta;
+  let x;
+  let y;
+  if (typeof backendNodeId === "number") {
+    const point = await clickNode(target, backendNodeId);
+    x = point.x;
+    y = point.y;
+  } else {
+    const metrics = await chrome.debugger.sendCommand(target, "Page.getLayoutMetrics", {});
+    const size = viewportFromMetrics(metrics);
+    x = size.width / 2;
+    y = size.height / 2;
+  }
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x,
+    y,
+    deltaX,
+    deltaY,
+  });
+  return {};
+}
+
 async function handle(msg) {
   const method = msg.method;
   const params = msg.params && typeof msg.params === "object" ? msg.params : {};
@@ -196,6 +535,23 @@ async function handle(msg) {
       return page(params.tabId);
     case "navigate":
       return navigate(params.tabId, params.url);
+    case "screenshot":
+      return screenshot(params.tabId);
+    case "snapshot":
+      return snapshot(params.tabId);
+    case "click":
+      return click(params.tabId, params.backendNodeId);
+    case "type":
+      return typeIn(params.tabId, params.backendNodeId, params.text, params.submit);
+    case "fill":
+      return fill(params.tabId, params.backendNodeId, params.value);
+    case "scroll":
+      return scroll(
+        params.tabId,
+        params.backendNodeId,
+        params.direction,
+        params.amount,
+      );
     default:
       return fail("debugger_failed", "unknown method " + method);
   }
@@ -317,6 +673,12 @@ async function connect() {
     connecting = false;
   }
 }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (!attached.has(tabId)) return;
+  attached.delete(tabId);
+  chrome.debugger.detach({ tabId }).catch(() => {});
+});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "getStatus") {
