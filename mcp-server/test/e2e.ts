@@ -107,23 +107,32 @@ async function main() {
 
   if (useConnected) {
     log("using an already-connected browser (no Chrome launched)");
-    const deadline0 = Date.now() + 20_000;
+    const waitMs = Number(process.env.E2E_WAIT_MS ?? 20_000);
+    const deadline0 = Date.now() + waitMs;
     let target: { name: string; id: string; version: string } | undefined;
+    let seen: string[] = [];
+    let announced = false;
     while (Date.now() < deadline0) {
       const listed = (await callJson(client, "chrome_browsers"))
         .browsers as Array<{ name: string; id: string; version: string }>;
-      target = listed[0];
+      seen = listed.map((b) => `${b.name} v${b.version || "?"}`);
+      // Wait for the version in this working tree: an extension loaded before
+      // the last edit is a different program.
+      target = listed.find((b) => b.version === manifest.version);
       if (target) break;
-      await new Promise((r) => setTimeout(r, 500));
+      if (listed.length && !announced) {
+        announced = true;
+        log(
+          `waiting for a reload — connected: ${seen.join(", ")}, need v${manifest.version}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 1000));
     }
     assert.ok(
       target,
-      "No browser connected. Load extension/ at chrome://extensions and keep Chrome open.",
-    );
-    assert.equal(
-      target.version,
-      manifest.version,
-      `The loaded extension is v${target.version || "?"} but this repo is v${manifest.version}. Reload it at chrome://extensions (circular arrow) and retry.`,
+      seen.length
+        ? `Still no extension at v${manifest.version} (connected: ${seen.join(", ")}). Reload it at chrome://extensions.`
+        : "No browser connected. Load extension/ at chrome://extensions and keep Chrome open.",
     );
     await callJson(client, "chrome_select_browser", { browserId: target.id });
     log(`driving ${target.name} v${target.version} (${target.id})`);

@@ -128,10 +128,31 @@ Every failure is one of these codes, as JSON the model can act on:
 
 ```bash
 cd mcp-server
-npm test            # 101 unit tests
+npm test            # 109 unit tests
 npm run smoke       # bridge protocol + MCP stdio surface, no Chrome needed
 npm run build
 ```
+
+### End-to-end
+
+`npm run e2e` drives a real browser through the whole tool surface against the
+fixture — permission gating, snapshot, fill, click, wait, console, network,
+select, evaluate, keyboard, screenshot, GIF, blocked origins, tab close.
+
+Google Chrome stable refuses `--load-extension`, so pick a mode:
+
+```bash
+# Drive a browser that already has the extension loaded. Opens one localhost
+# tab and closes it; a browser it did not launch is otherwise never commanded.
+E2E_USE_CONNECTED=1 npm run e2e
+
+# Or launch an isolated browser, given a binary that still allows it.
+CHROME_PATH=/path/to/chromium npm run e2e
+```
+
+The connected mode requires the loaded extension to match this tree's version —
+after editing `extension/`, hit reload (↻) on the card at `chrome://extensions`
+or the run will tell you to.
 
 The pure logic the extension depends on lives in `extension/lib/` (`keys.js`,
 `ax.js`) so it is unit-tested alongside the server rather than only being
