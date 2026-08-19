@@ -53,7 +53,11 @@ function tabPayload(
   const tabId = asNumber(result.tabId) ?? fallback?.tabId ?? 0;
   return {
     tabId,
-    url: asString(result.url, fallback?.url ?? ""),
+    url:
+      asString(result.url) ||
+      asString(result.pendingUrl) ||
+      fallback?.url ||
+      "",
     title: asString(result.title),
   };
 }
@@ -104,9 +108,16 @@ export function createTools(session: Session, bridge: Bridge) {
     return parsed;
   }
 
+  function forgetIfTargetGone(tabId: number): void {
+    if (session.targetTabId === tabId) session.unmarkGrokTab(tabId);
+  }
+
   async function loadPage(tabId: number): Promise<ToolResult<TabInfo>> {
     const resp = await bridge.send("page", { tabId });
-    if (!resp.ok) return mapWsError(resp);
+    if (!resp.ok) {
+      if (resp.error.code === "no_tab") forgetIfTargetGone(tabId);
+      return mapWsError(resp);
+    }
     const info = tabPayload(resp.result, { tabId });
     if (isBlockedUrl(info.url)) return blockedOrigin(info.url);
     return { ok: true, ...info };
@@ -177,6 +188,7 @@ export function createTools(session: Session, bridge: Bridge) {
     return run(async () => {
       const resp = await bridge.send("page", { tabId });
       if (!resp.ok) {
+        if (resp.error.code === "no_tab") forgetIfTargetGone(tabId);
         return fail("no_tab", resp.error.message || `Tab ${tabId} not found`);
       }
       session.targetTabId = tabId;
@@ -203,7 +215,10 @@ export function createTools(session: Session, bridge: Bridge) {
         tabId = opened.tabId;
       }
       const resp = await bridge.send("navigate", { tabId, url });
-      if (!resp.ok) return mapWsError(resp);
+      if (!resp.ok) {
+        if (resp.error.code === "no_tab") forgetIfTargetGone(tabId);
+        return mapWsError(resp);
+      }
       adoptGrokTab(resp.result);
       return { ok: true as const, ...tabPayload(resp.result, { tabId, url }) };
     });

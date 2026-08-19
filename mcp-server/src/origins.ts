@@ -19,6 +19,7 @@ export function parseOrigin(input: string): ToolResult<{ origin: string }> {
 }
 
 export function isBlockedUrl(url: string): boolean {
+  if (!url) return false;
   try {
     const u = new URL(url);
     if (u.protocol === "about:") return u.pathname !== "blank";

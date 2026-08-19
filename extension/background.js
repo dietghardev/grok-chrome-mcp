@@ -56,6 +56,7 @@ async function findBridge() {
 }
 
 function isBlockedUrl(url) {
+  if (!url) return false;
   try {
     const u = new URL(url);
     if (u.protocol === "about:") return u.pathname !== "blank";
@@ -74,7 +75,7 @@ function fail(code, message) {
 function tabResult(tab) {
   return {
     tabId: tab.id,
-    url: tab.url || "",
+    url: tab.url || tab.pendingUrl || "",
     title: tab.title || "",
   };
 }

@@ -127,3 +127,53 @@ describe("blocked origins and about:blank", () => {
     expect(calls).toEqual(["page", "click"]);
   });
 });
+
+describe("closed target tab", () => {
+  it("page no_tab clears the target so navigate opens a new tab", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.grant("http://localhost:3000");
+    session.targetTabId = 7;
+    session.markGrokTab(7);
+    const bridge: Bridge = {
+      port: 17352,
+      isConnected: () => true,
+      waitForConnection: async () => true,
+      close: async () => undefined,
+      send: async (method, params) => {
+        calls.push(method);
+        if (method === "page") {
+          return {
+            id: "x",
+            ok: false,
+            error: { code: "no_tab", message: "Tab 7 not found" },
+          } satisfies WsResponse;
+        }
+        if (method === "newTab") {
+          return {
+            id: "x",
+            ok: true,
+            result: { tabId: 8, url: params?.url ?? "about:blank", title: "" },
+          };
+        }
+        return {
+          id: "x",
+          ok: true,
+          result: { tabId: 8, url: "http://localhost:3000/", title: "" },
+        };
+      },
+    };
+    const tools = createTools(session, bridge);
+
+    const missing = await tools.page();
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.code).toBe("no_tab");
+    expect(session.targetTabId).toBeNull();
+    expect(session.isGrokTab(7)).toBe(false);
+
+    const r = await tools.navigate("http://localhost:3000/");
+    expect(r.ok).toBe(true);
+    expect(calls).toEqual(["page", "newTab", "navigate"]);
+    expect(session.targetTabId).toBe(8);
+  });
+});
