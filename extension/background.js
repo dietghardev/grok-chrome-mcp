@@ -74,6 +74,7 @@ function waitComplete(tabId, timeoutMs) {
   let cancel = () => {};
   const promise = new Promise((resolve, reject) => {
     let settled = false;
+    let seenNewLoad = false;
 
     function finish(tab, error) {
       if (settled) return;
@@ -99,7 +100,9 @@ function waitComplete(tabId, timeoutMs) {
     }, timeoutMs);
 
     function onUpdated(id, info, tab) {
-      if (id === tabId && info.status === "complete") finish(tab);
+      if (id !== tabId) return;
+      if (info.status === "loading" || info.url) seenNewLoad = true;
+      if (info.status === "complete" && seenNewLoad) finish(tab);
     }
 
     chrome.tabs.onUpdated.addListener(onUpdated);
@@ -159,11 +162,16 @@ async function navigate(tabId, url) {
   const existing = await getTab(tabId);
   if (!existing) return fail("no_tab", `Tab ${tabId} not found`);
   const pending = waitComplete(tabId, NAVIGATE_TIMEOUT_MS);
+  let updated;
   try {
-    await chrome.tabs.update(tabId, { url });
+    updated = await chrome.tabs.update(tabId, { url });
   } catch (e) {
     pending.cancel();
     return fail("no_tab", (e && e.message) || `Tab ${tabId} not found`);
+  }
+  if (updated && updated.status === "complete") {
+    pending.cancel();
+    return tabResult(updated);
   }
   try {
     const loaded = await pending;
