@@ -265,6 +265,18 @@ describe("javascript tool", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toBe(2);
   });
+
+  it("does not evaluate on about:blank even without needing a grant for clicks", async () => {
+    const calls: Call[] = [];
+    const s = new Session();
+    s.targetTabId = 7;
+    const r = await createTools(s, bridgeSpy(calls, {}, "about:blank")).evaluate(
+      "1 + 1",
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("invalid_input");
+    expect(calls.some((c) => c.method === "evaluate")).toBe(false);
+  });
 });
 
 describe("batch", () => {

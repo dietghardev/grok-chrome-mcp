@@ -28,6 +28,18 @@ describe("Session grants", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("invalid_origin");
   });
+
+  it("refuses to grant a blocked origin", () => {
+    const s = new Session();
+    const chrome = s.grant("chrome://extensions");
+    expect(chrome.ok).toBe(false);
+    if (!chrome.ok) expect(chrome.code).toBe("blocked_origin");
+
+    const file = s.grant("file:///etc/passwd");
+    expect(file.ok).toBe(false);
+    if (!file.ok) expect(file.code).toBe("blocked_origin");
+    expect(s.granted).toEqual([]);
+  });
 });
 
 describe("Session snapshot refs", () => {

@@ -23,10 +23,14 @@ Be aware of the trust model before reporting, and before using it:
   to a model, so a hostile page can attempt prompt injection. Grant origins you
   trust; there is no second classifier here.
 
+`chrome_evaluate` and `chrome_upload_file` also refuse `about:blank`: a blank
+tab can be opened without a grant, and running script there is a way to leave
+it for an ungranted origin.
+
 Reports that are especially welcome: a way to act on an origin without a grant,
-to reach a blocked origin (`chrome://`, the Web Store, other extensions), to
-escape the localhost binding, or to make the extension act on a page the server
-never asked about.
+to reach a blocked origin (`chrome://`, `file://`, the Web Store, other
+extensions), to escape the localhost binding, or to make the extension act on a
+page the server never asked about.
 
 ## Supported versions
 

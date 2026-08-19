@@ -10,6 +10,7 @@ const RECONNECT_START_MS = 300;
 const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30000;
+const HISTORY_IDLE_MS = 400;
 const SCROLL_TICK_PX = 360;
 const CONSOLE_MAX = 500;
 const NETWORK_MAX = 200;
@@ -17,10 +18,27 @@ const BUFFER_LIMIT_DEFAULT = 100;
 const TEXT_DEFAULT_CAP = 20000;
 const TEXT_HARD_CAP = 200000;
 const WAIT_POLL_MS = 250;
-const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
+const BLOCKED_SCHEMES = new Set([
+  "chrome:",
+  "chrome-extension:",
+  "chrome-search:",
+  "chrome-untrusted:",
+  "chrome-native:",
+  "edge:",
+  "brave:",
+  "opera:",
+  "vivaldi:",
+  "devtools:",
+  "view-source:",
+  "file:",
+  "data:",
+  "javascript:",
+  "filesystem:",
+]);
 const WEBSTORE_HOSTS = new Set([
   "chrome.google.com",
   "chromewebstore.google.com",
+  "microsoftedge.microsoft.com",
 ]);
 const attached = new Map();
 
@@ -983,6 +1001,26 @@ async function historyGo(tabId, direction) {
   } catch (e) {
     pending.cancel();
     return fail("invalid_input", (e && e.message) || `Cannot go ${direction}`);
+  }
+
+  // goBack/goForward is a no-op when there is nowhere to go, and SPAs often
+  // change history without a load. Waiting the full navigation timeout made
+  // those cases look hung for 30s.
+  const idle = new Promise((resolve) => setTimeout(resolve, HISTORY_IDLE_MS));
+  const raced = await Promise.race([
+    pending.then((loaded) => ({ kind: "loaded", loaded })).catch((e) => ({ kind: "error", e })),
+    idle.then(() => ({ kind: "idle" })),
+  ]);
+  if (raced.kind === "loaded") return tabResult(raced.loaded);
+  if (raced.kind === "error") {
+    if (raced.e && raced.e.code === "timeout") return fail("timeout", raced.e.message);
+    return fail("no_tab", (raced.e && raced.e.message) || `Tab ${tabId} not found`);
+  }
+
+  const now = await getTab(tabId);
+  if (now && now.status !== "loading") {
+    pending.cancel();
+    return tabResult(now);
   }
   try {
     return tabResult(await pending);

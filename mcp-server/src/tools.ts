@@ -120,9 +120,9 @@ export function createTools(session: Session, bridge: Bridge) {
 
   function checkDestination(url: string): ToolResult<{ origin: string }> {
     if (isAboutBlank(url)) return { ok: true, origin: "about:blank" };
+    if (isBlockedUrl(url)) return blockedOrigin(url);
     const parsed = parseOrigin(url);
     if (!parsed.ok) return parsed;
-    if (isBlockedUrl(url)) return blockedOrigin(url);
     const grant = session.requireGrant(parsed.origin);
     if (!grant.ok) return grant;
     return parsed;
@@ -143,10 +143,19 @@ export function createTools(session: Session, bridge: Bridge) {
     return { ok: true, ...info };
   }
 
-  async function requirePageGrant(tabId: number): Promise<ToolResult<TabInfo>> {
+  async function requirePageGrant(
+    tabId: number,
+    opts: { allowBlank?: boolean } = {},
+  ): Promise<ToolResult<TabInfo>> {
     const info = await loadPage(tabId);
     if (!info.ok) return info;
-    if (isAboutBlank(info.url)) return info;
+    if (opts.allowBlank !== false && isAboutBlank(info.url)) return info;
+    if (isAboutBlank(info.url)) {
+      return fail(
+        "invalid_input",
+        "Cannot run this tool on about:blank. Navigate to a granted origin first.",
+      );
+    }
     const parsed = parseOrigin(info.url);
     if (!parsed.ok) return parsed;
     const grant = session.requireGrant(parsed.origin);
@@ -261,7 +270,10 @@ export function createTools(session: Session, bridge: Bridge) {
         if (resp.error.code === "no_tab") forgetIfTargetGone(tabId);
         return mapWsError(resp);
       }
-      adoptGrokTab(resp.result);
+      // Keep whatever ownership this tab already had. Navigating a tab the
+      // user pointed us at must not turn it into a Grok tab that closeTab
+      // can then destroy without a grant.
+      session.targetTabId = asNumber(resp.result.tabId) ?? tabId;
       return { ok: true as const, ...tabPayload(resp.result, { tabId, url }) };
     });
   }
@@ -422,6 +434,7 @@ export function createTools(session: Session, bridge: Bridge) {
     ref: string | undefined,
     method: string,
     extra: Record<string, unknown> = {},
+    opts: { allowBlank?: boolean } = {},
   ): Promise<ToolResult<Record<string, unknown>>> {
     const tabId = session.targetTabId;
     if (tabId == null) return noTab();
@@ -431,7 +444,7 @@ export function createTools(session: Session, bridge: Bridge) {
       if (!node.ok) return node;
       params.backendNodeId = node.backendNodeId;
     }
-    const granted = await requirePageGrant(tabId);
+    const granted = await requirePageGrant(tabId, opts);
     if (!granted.ok) return granted;
     const resp = await bridge.send(method, params);
     if (!resp.ok) return mapWsError(resp);
@@ -476,7 +489,9 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function uploadFile(ref: string, paths: string[]) {
-    return run(async () => actOnRef(ref, "uploadFile", { paths }));
+    return run(async () =>
+      actOnRef(ref, "uploadFile", { paths }, { allowBlank: false }),
+    );
   }
 
   async function back() {
@@ -492,7 +507,9 @@ export function createTools(session: Session, bridge: Bridge) {
   }
 
   async function evaluate(expression: string) {
-    return run(async () => actOnRef(undefined, "evaluate", { expression }));
+    return run(async () =>
+      actOnRef(undefined, "evaluate", { expression }, { allowBlank: false }),
+    );
   }
 
   async function resize(width: number, height: number) {

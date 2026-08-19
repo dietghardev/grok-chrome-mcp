@@ -40,6 +40,20 @@ describe("isBlockedUrl", () => {
     expect(isBlockedUrl("edge://settings")).toBe(true);
     expect(isBlockedUrl("https://chrome.google.com/webstore/detail/x")).toBe(true);
     expect(isBlockedUrl("https://chromewebstore.google.com/detail/x")).toBe(true);
+    expect(isBlockedUrl("https://microsoftedge.microsoft.com/addons/detail/x")).toBe(
+      true,
+    );
+  });
+
+  it("blocks other Chromium internal schemes and local files", () => {
+    expect(isBlockedUrl("brave://settings")).toBe(true);
+    expect(isBlockedUrl("opera://settings")).toBe(true);
+    expect(isBlockedUrl("vivaldi://settings")).toBe(true);
+    expect(isBlockedUrl("devtools://devtools/bundled/inspector.html")).toBe(true);
+    expect(isBlockedUrl("view-source:https://example.com")).toBe(true);
+    expect(isBlockedUrl("file:///etc/passwd")).toBe(true);
+    expect(isBlockedUrl("data:text/html,hi")).toBe(true);
+    expect(isBlockedUrl("javascript:alert(1)")).toBe(true);
   });
 
   it("blocks about: except about:blank", () => {

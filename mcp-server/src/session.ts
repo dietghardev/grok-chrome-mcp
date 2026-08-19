@@ -1,5 +1,5 @@
 import { fail, type ToolError, type ToolResult } from "./errors.js";
-import { parseOrigin } from "./origins.js";
+import { isBlockedUrl, parseOrigin } from "./origins.js";
 
 export type SnapshotRef = { backendNodeId: number };
 
@@ -45,8 +45,17 @@ export class Session {
   }
 
   grant(input: string): ToolResult<{ granted: string[] }> {
+    // isBlockedUrl fail-closes on garbage, which is right for page actions
+    // but would turn "nope" into blocked_origin. Only treat parseable URLs
+    // as blocked grants.
+    if (URL.canParse(input) && isBlockedUrl(input)) {
+      return fail("blocked_origin", `Blocked origin: ${input}`);
+    }
     const parsed = parseOrigin(input);
     if (!parsed.ok) return parsed;
+    if (parsed.origin === "null") {
+      return fail("invalid_origin", `Cannot parse origin: ${input}`);
+    }
     this.allow.add(parsed.origin);
     return { ok: true, granted: this.granted };
   }

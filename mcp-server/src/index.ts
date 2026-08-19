@@ -124,7 +124,7 @@ async function main(): Promise<void> {
 
   const server = new McpServer({
     name: "grok-chrome",
-    version: "0.1.0",
+    version: packageVersion(),
   });
 
   server.registerTool(

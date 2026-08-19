@@ -10,8 +10,9 @@
 <p align="center">
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://www.npmjs.com/package/grok-chrome-mcp"><img alt="npm" src="https://img.shields.io/npm/v/grok-chrome-mcp.svg"></a>
+  <a href="https://github.com/dietghardev/grok-chrome-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dietghardev/grok-chrome-mcp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg">
-  <img alt="tests" src="https://img.shields.io/badge/tests-117%20passing-brightgreen.svg">
+  <img alt="tests" src="https://img.shields.io/badge/tests-122%20passing-brightgreen.svg">
 </p>
 
 <p align="center">
@@ -165,8 +166,9 @@ Every failure is one of these codes, as JSON the model can act on:
 
 - The bridge binds `127.0.0.1` only. Any process on this Mac can still reach
   that port — the same class of risk as a token under `~/.grok/`.
-- `chrome://`, `chrome-extension://`, `edge://`, and the Web Store are refused
-  outright, for reading as well as acting.
+- `chrome://`, `chrome-extension://`, `edge://`, `brave://`, `opera://`,
+  `vivaldi://`, `devtools://`, `view-source:`, `file://`, `data:`, and the
+  Chrome / Edge Web Stores are refused outright, for reading as well as acting.
 - Grok works in tabs it opened (grouped under **Grok**) unless you point it at
   one of yours with `chrome_use_tab` — and even then, acting still needs the
   grant.
@@ -187,7 +189,7 @@ issues.
 
 ```bash
 cd mcp-server
-npm test            # 109 unit tests
+npm test            # unit tests (see badge)
 npm run smoke       # bridge protocol + MCP stdio surface, no Chrome needed
 npm run build
 ```

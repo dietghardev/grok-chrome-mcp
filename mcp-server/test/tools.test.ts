@@ -130,6 +130,42 @@ describe("blocked origins and about:blank", () => {
     expect(r.ok).toBe(true);
     expect(calls).toEqual(["page", "click"]);
   });
+
+  it("evaluate on about:blank does not run JavaScript", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.targetTabId = 7;
+    const tools = createTools(session, fakeBridge(calls, "about:blank"));
+    const r = await tools.evaluate("location.href = 'https://example.com'");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("invalid_input");
+    expect(calls).toEqual(["page"]);
+  });
+});
+
+describe("navigate does not steal the user's tab", () => {
+  it("does not mark a user-owned tab as a Grok tab", async () => {
+    const calls: string[] = [];
+    const session = new Session();
+    session.grant("http://localhost:3000");
+    session.targetTabId = 7;
+    const bridge: Bridge = {
+      ...fakeBridge(calls),
+      send: async (method) => {
+        calls.push(method);
+        return {
+          id: "x",
+          ok: true,
+          result: { tabId: 7, url: "http://localhost:3000/", title: "Login" },
+        };
+      },
+    };
+    const tools = createTools(session, bridge);
+    const r = await tools.navigate("http://localhost:3000/");
+    expect(r.ok).toBe(true);
+    expect(session.isGrokTab(7)).toBe(false);
+    expect(calls).toEqual(["navigate"]);
+  });
 });
 
 describe("closed target tab", () => {

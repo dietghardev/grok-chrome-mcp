@@ -25,6 +25,8 @@ npm run smoke   # bridge protocol + MCP stdio surface, no browser needed
 npm run build
 ```
 
+Pull requests run that same trio on GitHub Actions.
+
 End-to-end against a real browser, with the extension loaded:
 
 ```bash

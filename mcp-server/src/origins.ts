@@ -1,9 +1,26 @@
 import { fail, type ToolResult } from "./errors.js";
 
-const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
+const BLOCKED_SCHEMES = new Set([
+  "chrome:",
+  "chrome-extension:",
+  "chrome-search:",
+  "chrome-untrusted:",
+  "chrome-native:",
+  "edge:",
+  "brave:",
+  "opera:",
+  "vivaldi:",
+  "devtools:",
+  "view-source:",
+  "file:",
+  "data:",
+  "javascript:",
+  "filesystem:",
+]);
 const WEBSTORE_HOSTS = new Set([
   "chrome.google.com",
   "chromewebstore.google.com",
+  "microsoftedge.microsoft.com",
 ]);
 
 export function parseOrigin(input: string): ToolResult<{ origin: string }> {

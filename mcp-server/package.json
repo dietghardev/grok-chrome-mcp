@@ -1,6 +1,6 @@
 {
   "name": "grok-chrome-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Drive your own Chrome from Grok Build: an MCP server plus an unpacked extension for clicking, typing, snapshots, console and network logs, and GIF recording.",
   "license": "MIT",
   "author": "dietghardev",
