@@ -14,6 +14,10 @@
   <img alt="tests" src="https://img.shields.io/badge/tests-117%20passing-brightgreen.svg">
 </p>
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Grok filling a login form in Chrome, with the shadow mouse cursor visible on the button it clicks" width="820">
+</p>
+
 ---
 
 Claude has an official Chrome extension. Grok does not. This is that, for Grok
@@ -173,6 +177,12 @@ Every failure is one of these codes, as JSON the model can act on:
   injection, so don't grant origins you don't trust — there is no second
   classifier here.
 
+## Contributing
+
+Issues and pull requests welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security reports go through [private advisories](SECURITY.md), not public
+issues.
+
 ## Development
 
 ```bash
@@ -206,3 +216,7 @@ or the run will tell you to.
 The pure logic the extension depends on lives in `extension/lib/` (`keys.js`,
 `ax.js`) so it is unit-tested alongside the server rather than only being
 exercised by hand in a browser.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

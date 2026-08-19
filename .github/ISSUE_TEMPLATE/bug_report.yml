@@ -1,0 +1,40 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the tool you called and the JSON it returned, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `npx grok-chrome-mcp --version`, and the extension version shown at chrome://extensions"
+      placeholder: "server 0.2.0, extension 0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: "Chrome 139 on macOS 15"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I reloaded the extension at chrome://extensions after updating
+          required: true
+        - label: The popup says "connected"
