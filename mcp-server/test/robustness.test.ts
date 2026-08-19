@@ -13,6 +13,10 @@ function bridgeReturning(result: Record<string, unknown>): Bridge {
     isConnected: () => true,
     waitForConnection: async () => true,
     close: async () => undefined,
+    clients: () => [],
+    select: () => false,
+    activeBrowserId: () => null,
+    onBrowserGone: () => undefined,
     send: async () => ({ id: "x", ok: true, result }) satisfies WsResponse,
   };
 }
@@ -40,6 +44,16 @@ describe("screenshot MCP content", () => {
     });
     expect(content).toHaveLength(1);
     expect(content[0].type).toBe("text");
+  });
+});
+
+describe("bridge port binding", () => {
+  it("falls through to the next port when one is already taken", async () => {
+    const first = await startBridge();
+    const second = await startBridge();
+    expect(second.port).toBe(first.port + 1);
+    await first.close();
+    await second.close();
   });
 });
 

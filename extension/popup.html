@@ -3,20 +3,117 @@
   <head>
     <meta charset="utf-8" />
     <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1f2124;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --ok: #0e9f6e;
+        --wait: #d97706;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1f2023;
+          --fg: #f3f4f6;
+          --muted: #9aa1ab;
+          --line: #34363b;
+          --ok: #34d399;
+          --wait: #fbbf24;
+        }
+      }
       html,
       body {
         margin: 0;
+        background: var(--bg);
+        color: var(--fg);
       }
-      #status {
-        width: 200px;
+      body {
+        width: 248px;
+        font: 13px/1.45 system-ui, -apple-system, sans-serif;
+        padding: 14px;
         box-sizing: border-box;
-        padding: 12px;
-        font: 13px/1.4 system-ui, sans-serif;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 12px;
+      }
+      .head img {
+        width: 26px;
+        height: 26px;
+        flex: none;
+      }
+      .name {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--wait);
+        flex: none;
+      }
+      .dot.on {
+        background: var(--ok);
+      }
+      dl {
+        margin: 11px 0 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 12px;
+        font-size: 12px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .hint {
+        margin: 11px 0 0;
+        color: var(--muted);
+        font-size: 11px;
       }
     </style>
   </head>
   <body>
-    <div id="status">waiting for Grok</div>
+    <div class="head">
+      <img src="icons/icon128.png" alt="" />
+      <div>
+        <div class="name">Grok Chrome</div>
+        <div class="sub" id="browser">this browser</div>
+      </div>
+    </div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="status">waiting for Grok</span>
+    </div>
+    <dl>
+      <dt>Bridge port</dt>
+      <dd id="port">—</dd>
+      <dt>Debugged tabs</dt>
+      <dd id="tabs">0</dd>
+      <dt>Version</dt>
+      <dd id="version">—</dd>
+    </dl>
+    <p class="hint" id="hint">Start Grok to connect.</p>
     <script src="popup.js"></script>
   </body>
 </html>

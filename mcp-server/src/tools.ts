@@ -96,7 +96,22 @@ function blockedOrigin(url: string): ToolError {
 }
 
 export function createTools(session: Session, bridge: Bridge) {
-  const run = <T>(fn: () => Promise<T>): Promise<T> => session.enqueue(fn);
+  bridge.onBrowserGone((browserId) => session.forgetBrowser(browserId));
+
+  /**
+   * Tab ids and refs are scoped per browser, so every command re-syncs the
+   * session to whichever browser the bridge is currently talking to.
+   */
+  const syncActiveBrowser = (): void => {
+    const active = bridge.activeBrowserId();
+    if (active) session.activeBrowserId = active;
+  };
+
+  const run = <T>(fn: () => Promise<T>): Promise<T> =>
+    session.enqueue(async () => {
+      syncActiveBrowser();
+      return fn();
+    });
 
   function checkDestination(url: string): ToolResult<{ origin: string }> {
     if (isAboutBlank(url)) return { ok: true, origin: "about:blank" };
@@ -154,6 +169,26 @@ export function createTools(session: Session, bridge: Bridge) {
 
   async function grantSite(origin: string) {
     return session.grant(origin);
+  }
+
+  async function revokeSite(origin: string) {
+    return session.revoke(origin);
+  }
+
+  async function browsers() {
+    syncActiveBrowser();
+    return { ok: true as const, browsers: bridge.clients() };
+  }
+
+  async function selectBrowser(browserId: string) {
+    if (!bridge.select(browserId)) {
+      return fail(
+        "extension_disconnected",
+        `Browser ${browserId} is not connected. Call chrome_browsers to see what is.`,
+      );
+    }
+    session.activeBrowserId = browserId;
+    return { ok: true as const, browsers: bridge.clients() };
   }
 
   async function tabs() {
@@ -378,6 +413,9 @@ export function createTools(session: Session, bridge: Bridge) {
 
   return {
     grantSite,
+    revokeSite,
+    browsers,
+    selectBrowser,
     tabs,
     newTab,
     useTab,

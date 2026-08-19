@@ -12,6 +12,10 @@ function fakeBridge(
     isConnected: () => true,
     waitForConnection: async () => true,
     close: async () => undefined,
+    clients: () => [],
+    select: () => false,
+    activeBrowserId: () => null,
+    onBrowserGone: () => undefined,
     send: async (method, params) => {
       record.push(method);
       if (method === "page") {
@@ -140,6 +144,10 @@ describe("closed target tab", () => {
       isConnected: () => true,
       waitForConnection: async () => true,
       close: async () => undefined,
+      clients: () => [],
+      select: () => false,
+      activeBrowserId: () => null,
+      onBrowserGone: () => undefined,
       send: async (method, params) => {
         calls.push(method);
         if (method === "page") {

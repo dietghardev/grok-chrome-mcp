@@ -1,7 +1,8 @@
 const PORTS = [];
 for (let p = 17352; p <= 17361; p++) PORTS.push(p);
 
-const HELLO = { type: "hello", extensionVersion: "0.1.0" };
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const BROWSER_ID_KEY = "grokBrowserId";
 const RECONNECT_START_MS = 300;
 const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
@@ -30,10 +31,58 @@ const INTERACTIVE_ROLES = new Set([
 const attached = new Map();
 
 let connected = false;
+let bridgePort = null;
+let browserName = "Chrome";
 let ws = null;
 let connecting = false;
 let reconnectDelay = RECONNECT_START_MS;
 let reconnectTimer = null;
+
+/** Brave and Edge masquerade as Chrome in the UA string; ask properly. */
+async function detectBrowserName() {
+  try {
+    if (navigator.brave && (await navigator.brave.isBrave())) return "Brave";
+  } catch {
+    // not Brave
+  }
+  const brands =
+    (navigator.userAgentData && navigator.userAgentData.brands) || [];
+  const names = brands.map((b) => String(b.brand));
+  const match = (re) => names.some((n) => re.test(n));
+  if (match(/Edge/i)) return "Edge";
+  if (match(/Opera|OPR/i)) return "Opera";
+  if (match(/Vivaldi/i)) return "Vivaldi";
+  if (match(/Google Chrome/i)) return "Chrome";
+  if (match(/Chromium/i)) return "Chromium";
+  return "Chrome";
+}
+
+/**
+ * A stable id per browser install so the MCP server keeps this browser's
+ * target tab across service-worker restarts and extension reloads.
+ */
+async function browserId() {
+  try {
+    const stored = await chrome.storage.local.get(BROWSER_ID_KEY);
+    const existing = stored && stored[BROWSER_ID_KEY];
+    if (typeof existing === "string" && existing) return existing;
+    const fresh = crypto.randomUUID();
+    await chrome.storage.local.set({ [BROWSER_ID_KEY]: fresh });
+    return fresh;
+  } catch {
+    return "local-" + EXTENSION_VERSION;
+  }
+}
+
+async function buildHello() {
+  browserName = await detectBrowserName();
+  return {
+    type: "hello",
+    extensionVersion: EXTENSION_VERSION,
+    browserId: await browserId(),
+    browserName,
+  };
+}
 
 async function findBridge() {
   for (const p of PORTS) {
@@ -781,8 +830,12 @@ function openSocket(port) {
   socket.addEventListener("open", () => {
     if (ws !== socket) return;
     connected = true;
+    bridgePort = port;
     reconnectDelay = RECONNECT_START_MS;
-    socket.send(JSON.stringify(HELLO));
+    buildHello().then((hello) => {
+      if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify(hello));
+    });
   });
 
   socket.addEventListener("message", (event) => {
@@ -793,6 +846,7 @@ function openSocket(port) {
   socket.addEventListener("close", () => {
     if (ws !== socket) return;
     connected = false;
+    bridgePort = null;
     ws = null;
     scheduleReconnect();
   });
@@ -847,7 +901,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "getStatus") {
-    sendResponse({ connected });
+    sendResponse({
+      connected,
+      port: bridgePort,
+      attachedTabs: attached.size,
+      version: EXTENSION_VERSION,
+      browserName,
+    });
   }
 });
 

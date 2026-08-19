@@ -17,7 +17,19 @@ export type WsFailure = {
   error: { code: string; message: string };
 };
 export type WsResponse = WsSuccess | WsFailure;
-export type HelloMessage = { type: "hello"; extensionVersion: string };
+export type HelloMessage = {
+  type: "hello";
+  extensionVersion: string;
+  browserId?: string;
+  browserName?: string;
+};
+
+export type BrowserClient = {
+  id: string;
+  name: string;
+  version: string;
+  active: boolean;
+};
 
 export function isHello(value: unknown): value is HelloMessage {
   if (!value || typeof value !== "object") return false;
@@ -27,6 +39,10 @@ export function isHello(value: unknown): value is HelloMessage {
 
 export type Bridge = {
   port: number;
+  clients(): BrowserClient[];
+  select(browserId: string): boolean;
+  activeBrowserId(): string | null;
+  onBrowserGone(fn: (browserId: string) => void): void;
   send(
     method: string,
     params?: Record<string, unknown>,

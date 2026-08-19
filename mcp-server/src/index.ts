@@ -23,6 +23,10 @@ function bindFailedBridge(): Bridge {
     isConnected: () => false,
     waitForConnection: async () => false,
     close: async () => undefined,
+    clients: () => [],
+    select: () => false,
+    activeBrowserId: () => null,
+    onBrowserGone: () => undefined,
     send: async () => ({
       id: "x",
       ok: false,
@@ -86,6 +90,35 @@ async function main(): Promise<void> {
       inputSchema: { origin: z.string() },
     },
     async ({ origin }) => textResult(await tools.grantSite(origin)),
+  );
+
+  server.registerTool(
+    "chrome_revoke_site",
+    {
+      description:
+        "Removes an origin from the allowlist for the rest of the session.",
+      inputSchema: { origin: z.string() },
+    },
+    async ({ origin }) => textResult(await tools.revokeSite(origin)),
+  );
+
+  server.registerTool(
+    "chrome_browsers",
+    {
+      description:
+        "Lists every connected browser (Chrome, Edge, Brave, …) and which one is active. Read-only.",
+    },
+    async () => textResult(await tools.browsers()),
+  );
+
+  server.registerTool(
+    "chrome_select_browser",
+    {
+      description:
+        "Points later tools at a different connected browser, by id from chrome_browsers.",
+      inputSchema: { browserId: z.string() },
+    },
+    async ({ browserId }) => textResult(await tools.selectBrowser(browserId)),
   );
 
   server.registerTool(
