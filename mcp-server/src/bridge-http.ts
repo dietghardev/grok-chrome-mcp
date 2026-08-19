@@ -115,6 +115,12 @@ export async function startBridge(): Promise<Bridge> {
     });
   };
 
+  const failAllPending = () => {
+    for (const id of [...pending.keys()]) {
+      settle(id, failure(id, "extension_disconnected", DISCONNECTED_MESSAGE));
+    }
+  };
+
   const settle = (id: string, response: WsResponse) => {
     const resolve = pending.get(id);
     if (!resolve) return;
@@ -123,7 +129,10 @@ export async function startBridge(): Promise<Bridge> {
   };
 
   wss.on("connection", (next) => {
-    if (socket && socket !== next) socket.close();
+    if (socket && socket !== next) {
+      socket.close();
+      failAllPending();
+    }
     socket = next;
     for (const waiter of connectionWaiters) waiter();
     connectionWaiters.clear();
@@ -139,6 +148,7 @@ export async function startBridge(): Promise<Bridge> {
 
     next.on("close", () => {
       if (socket === next) socket = null;
+      failAllPending();
     });
 
     next.on("error", () => {});
@@ -171,9 +181,7 @@ export async function startBridge(): Promise<Bridge> {
   };
 
   const close = async (): Promise<void> => {
-    for (const [id] of pending) {
-      settle(id, failure(id, "extension_disconnected", DISCONNECTED_MESSAGE));
-    }
+    failAllPending();
     if (socket) {
       socket.close();
       socket = null;

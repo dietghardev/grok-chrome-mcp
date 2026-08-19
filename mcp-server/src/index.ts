@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { startBridge } from "./bridge-http.js";
+import { screenshotContent } from "./content.js";
 import type { Bridge } from "./protocol.js";
 import { Session } from "./session.js";
 import { createTools } from "./tools.js";
@@ -139,21 +140,7 @@ async function main(): Promise<void> {
       description:
         "Viewport PNG of the target tab. Read-only; no origin grant required.",
     },
-    async () => {
-      const result = await tools.screenshot();
-      const content: Array<
-        | { type: "text"; text: string }
-        | { type: "image"; data: string; mimeType: string }
-      > = [{ type: "text", text: JSON.stringify(result) }];
-      if (result.ok && typeof result.data === "string") {
-        content.push({
-          type: "image",
-          data: result.data,
-          mimeType: "image/png",
-        });
-      }
-      return { content };
-    },
+    async () => ({ content: screenshotContent(await tools.screenshot()) }),
   );
 
   server.registerTool(

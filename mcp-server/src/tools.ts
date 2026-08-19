@@ -191,8 +191,10 @@ export function createTools(session: Session, bridge: Bridge) {
         if (resp.error.code === "no_tab") forgetIfTargetGone(tabId);
         return fail("no_tab", resp.error.message || `Tab ${tabId} not found`);
       }
+      const info = tabPayload(resp.result, { tabId });
+      if (isBlockedUrl(info.url)) return blockedOrigin(info.url);
       session.targetTabId = tabId;
-      return { ok: true as const, ...tabPayload(resp.result, { tabId }) };
+      return { ok: true as const, ...info };
     });
   }
 
