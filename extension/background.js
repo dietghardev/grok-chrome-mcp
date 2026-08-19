@@ -7,6 +7,9 @@ const RECONNECT_CAP_MS = 5000;
 const HEALTH_TIMEOUT_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30000;
 const SCROLL_TICK_PX = 360;
+const CONSOLE_MAX = 500;
+const NETWORK_MAX = 200;
+const BUFFER_LIMIT_DEFAULT = 100;
 const BLOCKED_SCHEMES = new Set(["chrome:", "chrome-extension:", "edge:"]);
 const WEBSTORE_HOSTS = new Set([
   "chrome.google.com",
@@ -24,7 +27,7 @@ const INTERACTIVE_ROLES = new Set([
   "heading",
   "searchbox",
 ]);
-const attached = new Set();
+const attached = new Map();
 
 let connected = false;
 let ws = null;
@@ -207,7 +210,13 @@ async function attach(tabId) {
       throw Object.assign(new Error(String(e)), { code: "debugger_failed" });
     }
   }
-  attached.add(tabId);
+  if (!attached.has(tabId)) {
+    attached.set(tabId, {
+      consoleBuf: [],
+      networkBuf: [],
+      requests: new Map(),
+    });
+  }
   await chrome.debugger.sendCommand(target, "Page.enable", {});
   await chrome.debugger.sendCommand(target, "DOM.enable", {});
   await chrome.debugger.sendCommand(target, "Runtime.enable", {});
@@ -225,6 +234,120 @@ async function ensureAttached(tabId) {
   }
   await attach(tabId);
   return { tabId };
+}
+
+function pushCapped(buf, item, max) {
+  buf.push(item);
+  if (buf.length > max) buf.splice(0, buf.length - max);
+}
+
+function remoteText(arg) {
+  if (arg == null || typeof arg !== "object") {
+    return arg == null ? "" : String(arg);
+  }
+  if (arg.value !== undefined) {
+    const v = arg.value;
+    if (typeof v === "string") return v;
+    if (v !== null && typeof v === "object") {
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return String(v);
+      }
+    }
+    return String(v);
+  }
+  if (arg.description != null) return String(arg.description);
+  if (arg.unserializableValue != null) return String(arg.unserializableValue);
+  return "";
+}
+
+function consoleArgsText(args) {
+  return (Array.isArray(args) ? args : []).map(remoteText).join(" ");
+}
+
+function firstFrameUrl(stackTrace) {
+  const frames = stackTrace && stackTrace.callFrames;
+  const url = frames && frames[0] && frames[0].url;
+  return url || undefined;
+}
+
+function bufferLimit(limit) {
+  if (typeof limit === "number" && Number.isFinite(limit) && limit >= 0) {
+    return limit;
+  }
+  return BUFFER_LIMIT_DEFAULT;
+}
+
+function tail(items, limit) {
+  const n = bufferLimit(limit);
+  if (n === 0) return [];
+  return items.slice(-n);
+}
+
+function onDebuggerEvent(source, method, params) {
+  const tabId = source && source.tabId;
+  if (tabId == null) return;
+  const state = attached.get(tabId);
+  if (!state) return;
+  const p = params && typeof params === "object" ? params : {};
+
+  if (method === "Runtime.consoleAPICalled") {
+    const url = firstFrameUrl(p.stackTrace);
+    const entry = {
+      level: p.type,
+      text: consoleArgsText(p.args),
+      timestamp: p.timestamp,
+    };
+    if (url) entry.url = url;
+    pushCapped(state.consoleBuf, entry, CONSOLE_MAX);
+    return;
+  }
+
+  if (method === "Runtime.exceptionThrown") {
+    const details = p.exceptionDetails || {};
+    const url = details.url || firstFrameUrl(details.stackTrace);
+    let text = "";
+    if (details.exception) text = remoteText(details.exception);
+    if (!text && details.text) text = String(details.text);
+    const entry = {
+      level: "error",
+      text,
+      timestamp: p.timestamp,
+    };
+    if (url) entry.url = url;
+    pushCapped(state.consoleBuf, entry, CONSOLE_MAX);
+    return;
+  }
+
+  if (method === "Network.requestWillBeSent") {
+    const req = p.request || {};
+    if (p.requestId != null) {
+      state.requests.set(p.requestId, {
+        method: req.method || "",
+        url: req.url || "",
+      });
+    }
+    return;
+  }
+
+  if (method === "Network.responseReceived") {
+    const response = p.response || {};
+    const pending = p.requestId != null ? state.requests.get(p.requestId) : undefined;
+    const headers = response.requestHeaders;
+    let httpMethod = pending && pending.method;
+    if (!httpMethod && headers && typeof headers === "object") {
+      httpMethod = headers[":method"] || headers.method;
+    }
+    const entry = {
+      method: httpMethod || "",
+      url: (pending && pending.url) || response.url || "",
+      status: response.status,
+    };
+    if (response.mimeType) entry.mimeType = response.mimeType;
+    pushCapped(state.networkBuf, entry, NETWORK_MAX);
+    if (p.requestId != null) state.requests.delete(p.requestId);
+  }
 }
 
 function axString(ax) {
@@ -523,6 +646,31 @@ async function scroll(tabId, backendNodeId, direction, amount) {
   return {};
 }
 
+async function readConsole(tabId, level, limit) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const state = attached.get(tabId);
+  let messages = state ? state.consoleBuf.slice() : [];
+  if (level != null && level !== "") {
+    messages = messages.filter((m) => m.level === level);
+  }
+  return { messages: tail(messages, limit) };
+}
+
+async function readNetwork(tabId, urlContains, status, limit) {
+  const ready = await ensureAttached(tabId);
+  if (isHandleError(ready)) return ready;
+  const state = attached.get(tabId);
+  let requests = state ? state.networkBuf.slice() : [];
+  if (typeof urlContains === "string" && urlContains !== "") {
+    requests = requests.filter((r) => String(r.url).includes(urlContains));
+  }
+  if (typeof status === "number") {
+    requests = requests.filter((r) => r.status === status);
+  }
+  return { requests: tail(requests, limit) };
+}
+
 async function handle(msg) {
   const method = msg.method;
   const params = msg.params && typeof msg.params === "object" ? msg.params : {};
@@ -551,6 +699,15 @@ async function handle(msg) {
         params.backendNodeId,
         params.direction,
         params.amount,
+      );
+    case "console":
+      return readConsole(params.tabId, params.level, params.limit);
+    case "network":
+      return readNetwork(
+        params.tabId,
+        params.urlContains,
+        params.status,
+        params.limit,
       );
     default:
       return fail("debugger_failed", "unknown method " + method);
@@ -673,6 +830,8 @@ async function connect() {
     connecting = false;
   }
 }
+
+chrome.debugger.onEvent.addListener(onDebuggerEvent);
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (!attached.has(tabId)) return;
