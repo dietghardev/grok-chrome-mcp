@@ -1,5 +1,9 @@
+import fsp from "node:fs/promises";
+import path from "node:path";
 import { fail, type ErrorCode, type ToolError, type ToolResult } from "./errors.js";
+import { encodeGif } from "./gif.js";
 import { isBlockedUrl, parseOrigin } from "./origins.js";
+import { DEFAULT_MAX_FRAMES, MAX_FPS, Recorder } from "./record.js";
 import type { Bridge, WsFailure } from "./protocol.js";
 import type { Session, SnapshotRef } from "./session.js";
 
@@ -530,6 +534,86 @@ export function createTools(session: Session, bridge: Bridge) {
     });
   }
 
+  const recorder = new Recorder();
+  let recordTimer: ReturnType<typeof setInterval> | null = null;
+
+  const stopTimer = (): void => {
+    if (recordTimer) clearInterval(recordTimer);
+    recordTimer = null;
+  };
+
+  async function recordStart(fps?: number, maxFrames?: number) {
+    const tabId = session.targetTabId;
+    if (tabId == null) return noTab();
+    if (recorder.isRecording()) {
+      return fail(
+        "invalid_input",
+        "Already recording. Call chrome_record_stop first.",
+      );
+    }
+    const rate = Math.min(Math.max(fps ?? 2, 1), MAX_FPS);
+    recorder.start(rate, maxFrames ?? DEFAULT_MAX_FRAMES);
+
+    // Frames go through the same serial queue as actions, so a frame is only
+    // ever captured between steps, never halfway through a click.
+    recordTimer = setInterval(() => {
+      void run(async () => {
+        if (!recorder.isRecording()) return;
+        const current = session.targetTabId;
+        if (current == null) return;
+        const resp = await bridge.send("screenshot", { tabId: current });
+        if (!resp.ok) return;
+        const data = asString(resp.result.data);
+        if (data) recorder.addFrame(Buffer.from(data, "base64"));
+      }).catch(() => undefined);
+    }, recorder.intervalMs());
+    if (typeof recordTimer.unref === "function") recordTimer.unref();
+
+    return { ok: true as const, fps: rate, intervalMs: recorder.intervalMs() };
+  }
+
+  async function recordStop(outPath: string, delayMs?: number) {
+    if (!recorder.isRecording()) {
+      return fail("invalid_input", "Not recording. Call chrome_record_start first.");
+    }
+    if (!path.isAbsolute(outPath)) {
+      return fail("invalid_input", `Output path must be absolute: ${outPath}`);
+    }
+    stopTimer();
+    const interval = recorder.intervalMs();
+    const cappedOut = recorder.hitCap();
+    const frames = recorder.stop();
+    if (!frames.length) {
+      return fail(
+        "timeout",
+        "No frames captured. Was the tab still open while recording?",
+      );
+    }
+    let gif;
+    try {
+      gif = encodeGif(frames, { delayMs: delayMs ?? interval });
+    } catch (err) {
+      return fail(
+        "invalid_input",
+        `Could not encode the recording: ${(err as Error).message}`,
+      );
+    }
+    try {
+      await fsp.mkdir(path.dirname(outPath), { recursive: true });
+      await fsp.writeFile(outPath, gif);
+    } catch (err) {
+      return fail("invalid_input", `Could not write ${outPath}: ${(err as Error).message}`);
+    }
+    return {
+      ok: true as const,
+      path: outPath,
+      frames: gif.frameCount,
+      dropped: gif.dropped,
+      bytes: gif.length,
+      truncated: cappedOut,
+    };
+  }
+
   async function pageText(maxChars?: number) {
     return run(async () => {
       const extra: Record<string, unknown> = {};
@@ -673,6 +757,8 @@ export function createTools(session: Session, bridge: Bridge) {
     find,
     waitFor,
     cursor,
+    recordStart,
+    recordStop,
     batch,
     useTab,
     page,

@@ -358,6 +358,30 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "chrome_record_start",
+    {
+      description:
+        "Starts recording the target tab as an animated GIF. Frames are captured between actions, so the recording shows each step. Read-only; no origin grant required.",
+      inputSchema: {
+        fps: z.number().min(1).max(10).optional(),
+        maxFrames: z.number().min(1).max(1000).optional(),
+      },
+    },
+    async ({ fps, maxFrames }) =>
+      textResult(await tools.recordStart(fps, maxFrames)),
+  );
+
+  server.registerTool(
+    "chrome_record_stop",
+    {
+      description:
+        "Stops recording and writes the GIF to an absolute path. Returns the path, frame count, and size — never the image data.",
+      inputSchema: { path: z.string(), delayMs: z.number().optional() },
+    },
+    async ({ path, delayMs }) => textResult(await tools.recordStop(path, delayMs)),
+  );
+
+  server.registerTool(
     "chrome_batch",
     {
       description:

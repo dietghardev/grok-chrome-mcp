@@ -80,6 +80,8 @@ const expected = [
   "chrome_new_tab",
   "chrome_page",
   "chrome_press",
+  "chrome_record_start",
+  "chrome_record_stop",
   "chrome_reload",
   "chrome_resize",
   "chrome_revoke_site",
